@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="@drawable/widget_bg"
+    android:paddingStart="2dp"
+    android:paddingEnd="2dp">
+
+    <!-- Refresh button: fixed strip on the left. Turns amber when the data is outdated. -->
+    <FrameLayout
+        android:id="@+id/widget_habit_refresh"
+        android:layout_width="32dp"
+        android:layout_height="match_parent">
+
+        <ImageView
+            android:id="@+id/widget_habit_refresh_bg"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="center"
+            android:src="@drawable/widget_habit_circle_open"
+            android:contentDescription="@null" />
+
+        <ImageView
+            android:id="@+id/widget_habit_refresh_icon"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_widget_habit_refresh"
+            android:contentDescription="@null" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <!-- Only shown when outdated and the widget is tall enough (see provider). -->
+        <TextView
+            android:id="@+id/widget_habit_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp"
+            android:text="@string/widget_habits_outdated"
+            android:textColor="@color/widget_habit_outdated"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:visibility="gone" />
+
+        <!-- Fixed-size tiles: more columns/rows appear as the widget grows, tiles never
+             stretch. Tiles that do not fit are simply not visible. -->
+        <GridView
+            android:id="@+id/widget_habit_grid"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:numColumns="auto_fit"
+            android:columnWidth="40dp"
+            android:stretchMode="none"
+            android:gravity="start|top"
+            android:horizontalSpacing="0dp"
+            android:verticalSpacing="0dp"
+            android:listSelector="@android:color/transparent"
+            android:scrollbars="none" />
+
+        <TextView
+            android:id="@+id/widget_habit_empty"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:text="@string/widget_habits_empty"
+            android:textColor="@color/widget_ink_muted"
+            android:textSize="13sp"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

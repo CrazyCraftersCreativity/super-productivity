@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Stopwatch running -->
+    <color name="widget_habit_running">#2E7D32</color>
+    <!-- Outdated marker -->
+    <color name="widget_habit_outdated">#F57C00</color>
+</resources>
