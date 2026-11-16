@@ -142,6 +142,7 @@ export const planHabitWidgetEventChanges = (
       continue;
     }
     const isStopWatch = counter.type === SimpleCounterType.StopWatch;
+    const isCountdown = counter.type === SimpleCounterType.RepeatedCountdownReminder;
 
     switch (event.kind) {
       case 'count': {
@@ -170,7 +171,8 @@ export const planHabitWidgetEventChanges = (
         break;
       }
       case 'stopApp': {
-        if (isStopWatch && counter.isOn) {
+        // A stopwatch or countdown running inside the app: the widget asks to stop it.
+        if ((isStopWatch || isCountdown) && counter.isOn) {
           stopIds.add(counter.id);
         }
         break;

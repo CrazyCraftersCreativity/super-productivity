@@ -7,7 +7,7 @@
  */
 
 const FONT_FAMILY = 'Material Symbols Outlined';
-const ICON_SIZE_PX = 64;
+const ICON_SIZE_PX = 96;
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 
 const cache = new Map<string, Promise<string | null>>();

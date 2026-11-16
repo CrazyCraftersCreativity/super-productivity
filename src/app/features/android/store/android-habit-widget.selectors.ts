@@ -30,6 +30,9 @@ export const getHabitWidgetKind = (counter: SimpleCounter): AndroidHabitWidgetKi
   if (counter.type === SimpleCounterType.StopWatch) {
     return 'time';
   }
+  if (counter.type === SimpleCounterType.RepeatedCountdownReminder) {
+    return 'countdown';
+  }
   return isHabitSimpleCompletion(counter) ? 'bool' : 'count';
 };
 
@@ -81,7 +84,11 @@ export const selectAndroidHabitWidgetData = createSelector(
         count: kind === 'time' ? quantizeTimeMs(rawCount, goal) : rawCount,
         goal,
         dayEnabled: isHabitDayEnabled(counter, dayStr),
-        isOn: kind === 'time' && !!counter.isOn,
+        isOn: (kind === 'time' || kind === 'countdown') && !!counter.isOn,
+        countdownMs:
+          kind === 'countdown' && (counter.countdownDuration || 0) > 0
+            ? (counter.countdownDuration as number)
+            : 0,
       };
     }),
   }),

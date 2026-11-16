@@ -22,8 +22,27 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_HABIT_CLICK -> handleHabitClick(context, intent.getStringExtra(EXTRA_HABIT_ID))
-            ACTION_STALE_ALARM -> HabitWidgetProvider.refreshAll(context)
+            ACTION_STALE_ALARM -> {
+                // Midnight passed, or a countdown ran out: book finished countdowns,
+                // redraw, and (if the app is alive) ask it to apply them.
+                val settled =
+                    HabitWidgetQueue.settleExpiredCountdowns(context, System.currentTimeMillis())
+                HabitWidgetProvider.refreshAll(context)
+                if (settled) {
+                    signalApp(context)
+                }
+            }
         }
+    }
+
+    /**
+     * Contentless "drain now" signal for a live app. Reuses the task widget's signal:
+     * its listener only triggers Angular's drain effects, which pull the queued events
+     * themselves (single delivery path).
+     */
+    private fun signalApp(context: Context) {
+        LocalBroadcastManager.getInstance(context)
+            .sendBroadcast(Intent(TaskListWidgetProvider.ACTION_WIDGET_DONE_DRAIN))
     }
 
     private fun handleHabitClick(context: Context, habitId: String?) {
@@ -31,13 +50,17 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
             return
         }
         val now = System.currentTimeMillis()
+        // A countdown that has run out is booked first, so a tap starts a fresh one.
+        HabitWidgetQueue.settleExpiredCountdowns(context, now)
         val snapshot = HabitWidgetProvider.loadSnapshot(context)
+        val countdowns = HabitWidgetQueue.countdowns(context)
         // Decide from the state the user is looking at (snapshot + queued taps), so
         // repeated taps on a yes/no habit toggle back and forth.
         val display = HabitWidgetData.display(
             snapshot,
             HabitWidgetQueue.peekEvents(context),
             HabitWidgetQueue.runningTimers(context),
+            countdowns,
             now
         ).firstOrNull { it.habit.id == habitId }
         if (display == null || !display.habit.dayEnabled) {
@@ -67,6 +90,31 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
                         else -> HabitWidgetQueue.startTimer(context, habitId, now)
                     }
                 }
+
+                HabitKind.COUNTDOWN -> {
+                    val state = countdowns[habitId]
+                    when {
+                        // Running: pause, keeping what is left.
+                        state != null && state.isRunning ->
+                            HabitWidgetQueue.pauseCountdown(
+                                context, habitId, maxOf(1L, state.endsAt - now)
+                            )
+                        // Paused: carry on from what was left.
+                        state != null && state.remainingMs > 0L ->
+                            HabitWidgetQueue.startCountdown(
+                                context, habitId, now + state.remainingMs
+                            )
+                        // Running inside the app: ask the app to pause it.
+                        display.isRunning -> addEvent(context, habitId, HabitEventKind.STOP_APP, now)
+                        // Idle: start a full countdown. When it runs out it is booked as one count.
+                        display.habit.countdownMs > 0L ->
+                            HabitWidgetQueue.startCountdown(
+                                context, habitId, now + display.habit.countdownMs
+                            )
+                        // No length configured: behave like a plain counter.
+                        else -> addEvent(context, habitId, HabitEventKind.COUNT, now)
+                    }
+                }
             }
         } catch (e: Exception) {
             // Never log the habit title or id of user content beyond this message.
@@ -75,11 +123,7 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
         }
 
         HabitWidgetProvider.refreshAll(context)
-        // Contentless "drain now" signal for a live app. Reuses the task widget's
-        // signal: its listener only triggers Angular's drain effects, which pull the
-        // queued events themselves (single delivery path).
-        LocalBroadcastManager.getInstance(context)
-            .sendBroadcast(Intent(TaskListWidgetProvider.ACTION_WIDGET_DONE_DRAIN))
+        signalApp(context)
     }
 
     private fun addEvent(

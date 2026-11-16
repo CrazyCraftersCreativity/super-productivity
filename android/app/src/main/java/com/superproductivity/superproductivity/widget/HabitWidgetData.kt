@@ -1,16 +1,21 @@
 package com.superproductivity.superproductivity.widget
 
 import org.json.JSONObject
+import java.util.Locale
 
-/** How a habit is operated: a yes/no check, a numeric counter, or a stopwatch. */
+/**
+ * How a habit is operated: a yes/no check, a numeric counter, a stopwatch, or a
+ * repeated countdown (each time it runs out, the count goes up by one).
+ */
 enum class HabitKind {
-    BOOL, COUNT, TIME;
+    BOOL, COUNT, TIME, COUNTDOWN;
 
     companion object {
         fun fromWire(value: String?): HabitKind? = when (value) {
             "bool" -> BOOL
             "count" -> COUNT
             "time" -> TIME
+            "countdown" -> COUNTDOWN
             else -> null
         }
     }
@@ -21,7 +26,8 @@ enum class HabitKind {
  *
  * [count] is the value for the snapshot's day (a count, or milliseconds for TIME
  * habits) and [goal] the value at which the habit counts as done today.
- * [isOn] is only meaningful for TIME habits: the stopwatch is running inside the app.
+ * [isOn] is only meaningful for TIME and COUNTDOWN habits: the timer is running inside
+ * the app. [countdownMs] is the length of one countdown (COUNTDOWN habits only).
  */
 data class WidgetHabit(
     val id: String,
@@ -31,7 +37,8 @@ data class WidgetHabit(
     val count: Long,
     val goal: Long,
     val dayEnabled: Boolean,
-    val isOn: Boolean
+    val isOn: Boolean,
+    val countdownMs: Long
 )
 
 /**
@@ -77,12 +84,29 @@ data class HabitEvent(
     val endAt: Long = 0L
 )
 
-/** What one habit looks like right now: snapshot plus pending taps, as of "now". */
+/**
+ * A countdown started from the widget, remembered natively (the app may be closed).
+ * Running: it runs out at [endsAt] (epoch ms). Paused: [remainingMs] is what is left.
+ */
+data class CountdownState(
+    val isRunning: Boolean,
+    val endsAt: Long,
+    val remainingMs: Long
+)
+
+/**
+ * What one habit looks like right now: snapshot plus pending taps, as of "now".
+ *
+ * [timeMs] depends on the kind: a running stopwatch = everything tracked today
+ * including the current run; a running or paused countdown = time left; otherwise 0.
+ */
 data class HabitDisplay(
     val habit: WidgetHabit,
     val count: Long,
     val isDone: Boolean,
-    val isRunning: Boolean
+    val isRunning: Boolean,
+    val isPaused: Boolean,
+    val timeMs: Long
 )
 
 /**
@@ -122,7 +146,8 @@ object HabitWidgetData {
                             count = h.optLong("count", 0L),
                             goal = h.optLong("goal", 1L).coerceAtLeast(1L),
                             dayEnabled = h.optBoolean("dayEnabled", true),
-                            isOn = h.optBoolean("isOn", false)
+                            isOn = h.optBoolean("isOn", false),
+                            countdownMs = h.optLong("countdownMs", 0L).coerceAtLeast(0L)
                         )
                     )
                 }
@@ -165,11 +190,14 @@ object HabitWidgetData {
      * Stale snapshot (past midnight): the new day starts from zero — yesterday's counts
      * are not today's — and only taps made since the day ended count. Taps from before
      * midnight stay in the queue untouched; Angular books them on their own day.
+     *
+     * A countdown that has already run out but is not booked yet counts as one more.
      */
     fun display(
         snapshot: HabitSnapshot,
         events: List<HabitEvent>,
         runningTimers: Map<String, Long>,
+        countdowns: Map<String, CountdownState>,
         nowMs: Long
     ): List<HabitDisplay> {
         val boundary = snapshot.validUntil
@@ -195,10 +223,59 @@ object HabitWidgetData {
                         if (isInWindow(event.at, boundary, stale)) appStopped = true
                 }
             }
-            val isRunning = habit.kind == HabitKind.TIME &&
-                (runningTimers.containsKey(habit.id) || (!stale && habit.isOn && !appStopped))
-            HabitDisplay(habit, count, count >= habit.goal, isRunning)
+
+            var isRunning = false
+            var isPaused = false
+            var timeMs = 0L
+            when (habit.kind) {
+                HabitKind.TIME -> {
+                    val startedAt = runningTimers[habit.id]
+                    if (startedAt != null) {
+                        // Only the part of the run that falls on the displayed day.
+                        val from =
+                            if (stale && boundary != null) maxOf(startedAt, boundary) else startedAt
+                        isRunning = true
+                        timeMs = count + maxOf(0L, nowMs - from)
+                    } else if (!stale && habit.isOn && !appStopped) {
+                        // Running inside the app: its start is unknown here, so the
+                        // clock starts from the tracked time of the last snapshot.
+                        isRunning = true
+                        timeMs = count
+                    }
+                }
+
+                HabitKind.COUNTDOWN -> {
+                    val state = countdowns[habit.id]
+                    if (state != null) {
+                        if (state.isRunning) {
+                            if (state.endsAt <= nowMs) {
+                                // Ran out, not booked yet: one more for the day it ran out on.
+                                if (isInWindow(state.endsAt, boundary, stale)) count += 1L
+                            } else {
+                                isRunning = true
+                                timeMs = state.endsAt - nowMs
+                            }
+                        } else if (state.remainingMs > 0L) {
+                            isPaused = true
+                            timeMs = state.remainingMs
+                        }
+                    } else if (!stale && habit.isOn && !appStopped) {
+                        // Running inside the app: remaining time unknown here.
+                        isRunning = true
+                    }
+                }
+
+                HabitKind.BOOL, HabitKind.COUNT -> Unit
+            }
+            HabitDisplay(habit, count, count >= habit.goal, isRunning, isPaused, timeMs)
         }
+    }
+
+    /** True when a live on-screen clock (Chronometer) shows this habit's time. */
+    fun usesChronometer(display: HabitDisplay): Boolean = when (display.habit.kind) {
+        HabitKind.TIME -> display.isRunning
+        HabitKind.COUNTDOWN -> display.isRunning && display.timeMs > 0L
+        else -> false
     }
 
     private fun isInWindow(at: Long, boundary: Long?, stale: Boolean): Boolean {
@@ -217,7 +294,7 @@ object HabitWidgetData {
         }
     }
 
-    /** Small label under the icon: "3", "3/8", "12m", or empty when there is nothing to say. */
+    /** Small label in the tile corner: "3", "3/8", "12m", "/3", or empty when there is nothing to say. */
     fun badgeText(display: HabitDisplay): String {
         val habit = display.habit
         return when (habit.kind) {
@@ -228,7 +305,24 @@ object HabitWidgetData {
                 else -> ""
             }
 
-            HabitKind.TIME -> formatDuration(display.count)
+            // The count itself is the big number in the middle; only the goal is added.
+            HabitKind.COUNTDOWN -> if (habit.goal > 1L) "/${habit.goal}" else ""
+
+            HabitKind.TIME ->
+                if (display.isRunning) "" else formatDuration(display.count)
+        }
+    }
+
+    /** "m:ss" (or "h:mm:ss") for a time left, rounded up to whole seconds. */
+    fun formatClock(ms: Long): String {
+        val totalSeconds = (maxOf(0L, ms) + 999L) / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%d:%02d", minutes, seconds)
         }
     }
 

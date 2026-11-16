@@ -8,8 +8,10 @@ export const ANDROID_HABIT_WIDGET_DATA_KEY = 'widget_data_habits';
  *  - `bool`: a streak habit with a goal of one click (tap toggles done / not done)
  *  - `count`: any other click or countdown counter (tap adds one)
  *  - `time`: a stopwatch (tap starts / stops it)
+ *  - `countdown`: a repeated countdown (tap starts / pauses it; each time it runs out
+ *    the count goes up by one)
  */
-export type AndroidHabitWidgetKind = 'bool' | 'count' | 'time';
+export type AndroidHabitWidgetKind = 'bool' | 'count' | 'time' | 'countdown';
 
 export interface AndroidWidgetHabit {
   id: string;
@@ -23,8 +25,10 @@ export interface AndroidWidgetHabit {
   goal: number;
   /** false if the habit is not scheduled for that weekday (taps are ignored) */
   dayEnabled: boolean;
-  /** `time` habits only: the stopwatch is running inside the app */
+  /** `time` and `countdown` habits only: the timer is running inside the app */
   isOn: boolean;
+  /** `countdown` habits only: length of one countdown in ms (0 otherwise) */
+  countdownMs: number;
 }
 
 /** Pure projection of app state (see selectAndroidHabitWidgetData). */

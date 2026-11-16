@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 /**
  * SharedPreferences-backed store for everything the habits widget has to remember
@@ -13,6 +14,9 @@ import org.json.JSONObject
  *    redelivers instead of losing the tap.
  *  - running stopwatches: habit id -> start instant, for stopwatches started from the
  *    widget while the app is not running. Stopping one turns it into a TIME event.
+ *  - countdowns started from the widget: habit id -> running (end instant) or paused
+ *    (time left). When one runs out it is turned into a COUNT event at the moment it
+ *    ran out, so Angular books it on the right day — see [settleExpiredCountdowns].
  *
  * Writes use commit() (not apply()): they run in short-lived broadcasts, and the
  * process may be killed right afterwards.
@@ -21,6 +25,7 @@ object HabitWidgetQueue {
     private const val PREFS_NAME = "SuperProductivityHabitWidget"
     private const val KEY_EVENTS = "HABIT_EVENTS"
     private const val KEY_TIMERS = "HABIT_RUNNING_TIMERS"
+    private const val KEY_COUNTDOWNS = "HABIT_COUNTDOWNS"
     private const val MAX_EVENTS = 2000
 
     private fun prefs(context: Context): SharedPreferences =
@@ -86,6 +91,9 @@ object HabitWidgetQueue {
     /** Same as [peekEvents], as the JSON array string handed to Angular. */
     @Synchronized
     fun eventsJson(context: Context): String {
+        // A countdown that ran out while nobody was looking becomes an event first, so
+        // the app applies it together with the taps.
+        settleExpiredCountdowns(context, System.currentTimeMillis())
         val array = JSONArray()
         for (event in peekEvents(context)) {
             array.put(toJson(event))
@@ -151,5 +159,114 @@ object HabitWidgetQueue {
         timers.remove(habitId)
         prefs.edit().putString(KEY_TIMERS, timers.toString()).commit()
         return if (startedAt > 0L) startedAt else null
+    }
+
+    private fun readCountdowns(prefs: SharedPreferences): JSONObject {
+        val raw = prefs.getString(KEY_COUNTDOWNS, null) ?: return JSONObject()
+        return try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            JSONObject()
+        }
+    }
+
+    @Synchronized
+    fun countdowns(context: Context): Map<String, CountdownState> {
+        val states = readCountdowns(prefs(context))
+        val result = mutableMapOf<String, CountdownState>()
+        val keys = states.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val entry = states.optJSONObject(key) ?: continue
+            result[key] = CountdownState(
+                isRunning = entry.optBoolean("running", false),
+                endsAt = entry.optLong("endsAt", 0L),
+                remainingMs = entry.optLong("remaining", 0L)
+            )
+        }
+        return result
+    }
+
+    /** Starts (or resumes) a countdown that runs out at [endsAt]. */
+    @Synchronized
+    fun startCountdown(context: Context, habitId: String, endsAt: Long) {
+        val prefs = prefs(context)
+        val states = readCountdowns(prefs)
+        states.put(
+            habitId,
+            JSONObject().put("running", true).put("endsAt", endsAt).put("remaining", 0L)
+        )
+        prefs.edit().putString(KEY_COUNTDOWNS, states.toString()).commit()
+    }
+
+    /** Pauses a countdown with [remainingMs] left. */
+    @Synchronized
+    fun pauseCountdown(context: Context, habitId: String, remainingMs: Long) {
+        val prefs = prefs(context)
+        val states = readCountdowns(prefs)
+        states.put(
+            habitId,
+            JSONObject().put("running", false).put("endsAt", 0L).put("remaining", remainingMs)
+        )
+        prefs.edit().putString(KEY_COUNTDOWNS, states.toString()).commit()
+    }
+
+    /** The end instant of the soonest running countdown, or null if none is running. */
+    @Synchronized
+    fun nextCountdownEnd(context: Context): Long? {
+        var next: Long? = null
+        for (state in countdowns(context).values) {
+            if (state.isRunning && state.endsAt > 0L) {
+                next = if (next == null) state.endsAt else minOf(next, state.endsAt)
+            }
+        }
+        return next
+    }
+
+    /**
+     * Turns every running countdown whose end has passed into a COUNT event dated at
+     * its end, and forgets it. Event and state change are written in ONE commit, so a
+     * crash can neither lose the count nor book it twice. Returns true if anything
+     * was settled.
+     */
+    @Synchronized
+    fun settleExpiredCountdowns(context: Context, nowMs: Long): Boolean {
+        val prefs = prefs(context)
+        val states = readCountdowns(prefs)
+        val expired = mutableListOf<Pair<String, Long>>()
+        val keys = states.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val entry = states.optJSONObject(key) ?: continue
+            val endsAt = entry.optLong("endsAt", 0L)
+            if (entry.optBoolean("running", false) && endsAt in 1..nowMs) {
+                expired.add(Pair(key, endsAt))
+            }
+        }
+        if (expired.isEmpty()) {
+            return false
+        }
+        val events = readArray(prefs)
+        for ((habitId, endsAt) in expired) {
+            events.put(
+                toJson(
+                    HabitEvent(
+                        id = UUID.randomUUID().toString(),
+                        habitId = habitId,
+                        kind = HabitEventKind.COUNT,
+                        at = endsAt
+                    )
+                )
+            )
+            states.remove(habitId)
+        }
+        while (events.length() > MAX_EVENTS) {
+            events.remove(0)
+        }
+        prefs.edit()
+            .putString(KEY_EVENTS, events.toString())
+            .putString(KEY_COUNTDOWNS, states.toString())
+            .commit()
+        return true
     }
 }

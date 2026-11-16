@@ -1,81 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Transparent habits widget: the tile grid fills it completely; the refresh button
+     sits on top of the grid in the top-left corner. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="horizontal"
-    android:background="@drawable/widget_bg"
-    android:paddingStart="2dp"
-    android:paddingEnd="2dp">
+    android:layout_height="match_parent">
 
-    <!-- Refresh button: fixed strip on the left. Turns amber when the data is outdated. -->
-    <FrameLayout
+    <!-- Rows of tiles are added here by HabitWidgetProvider. -->
+    <LinearLayout
+        android:id="@+id/widget_habit_rows"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/widget_habit_empty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_habit_pill_open"
+        android:gravity="center"
+        android:padding="12dp"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:text="@string/widget_habits_empty"
+        android:textColor="@color/widget_ink"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <!-- Refresh button. The pill drawable is inset, so the touch area (26dp high) is
+         larger than the visible pill (18dp). Turns amber and shows a label when outdated. -->
+    <LinearLayout
         android:id="@+id/widget_habit_refresh"
-        android:layout_width="32dp"
-        android:layout_height="match_parent">
-
-        <ImageView
-            android:id="@+id/widget_habit_refresh_bg"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:layout_gravity="center"
-            android:src="@drawable/widget_habit_circle_open"
-            android:contentDescription="@null" />
+        android:layout_width="wrap_content"
+        android:layout_height="26dp"
+        android:layout_gravity="top|start"
+        android:background="@drawable/widget_habit_pill_open"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
 
         <ImageView
             android:id="@+id/widget_habit_refresh_icon"
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:layout_gravity="center"
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:layout_marginStart="7dp"
+            android:layout_marginEnd="7dp"
             android:src="@drawable/ic_widget_habit_refresh"
             android:contentDescription="@null" />
-    </FrameLayout>
 
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <!-- Only shown when outdated and the widget is tall enough (see provider). -->
         <TextView
             android:id="@+id/widget_habit_banner"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingStart="4dp"
-            android:paddingEnd="4dp"
-            android:paddingBottom="2dp"
-            android:text="@string/widget_habits_outdated"
-            android:textColor="@color/widget_habit_outdated"
-            android:textSize="11sp"
-            android:textStyle="bold"
+            android:layout_marginStart="-3dp"
+            android:layout_marginEnd="9dp"
             android:maxLines="1"
-            android:ellipsize="end"
-            android:visibility="gone" />
-
-        <!-- Fixed-size tiles: more columns/rows appear as the widget grows, tiles never
-             stretch. Tiles that do not fit are simply not visible. -->
-        <GridView
-            android:id="@+id/widget_habit_grid"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:numColumns="auto_fit"
-            android:columnWidth="40dp"
-            android:stretchMode="none"
-            android:gravity="start|top"
-            android:horizontalSpacing="0dp"
-            android:verticalSpacing="0dp"
-            android:listSelector="@android:color/transparent"
-            android:scrollbars="none" />
-
-        <TextView
-            android:id="@+id/widget_habit_empty"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:text="@string/widget_habits_empty"
-            android:textColor="@color/widget_ink_muted"
-            android:textSize="13sp"
+            android:text="@string/widget_habits_outdated"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold"
             android:visibility="gone" />
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>

@@ -3,6 +3,6 @@
     <string name="widget_habits_title">Habits</string>
     <string name="widget_habits_description">Track your habits right from the home screen</string>
     <string name="widget_habits_empty">No habits yet</string>
-    <string name="widget_habits_outdated">Outdated – tap refresh</string>
+    <string name="widget_habits_outdated">Outdated</string>
     <string name="widget_habits_refresh">Refresh habits</string>
 </resources>

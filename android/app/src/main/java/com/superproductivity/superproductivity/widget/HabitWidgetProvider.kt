@@ -7,10 +7,17 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Base64
 import android.util.Log
+import android.util.TypedValue
 import android.view.View
 import android.widget.RemoteViews
 import com.superproductivity.superproductivity.App
@@ -19,11 +26,13 @@ import com.superproductivity.superproductivity.R
 
 /**
  * Home screen widget showing one tile per habit, read from the `widget_data_habits`
- * snapshot pushed by Angular. Tiles keep a fixed size: a bigger widget shows more of
- * them, a smaller one fewer. Taps are not handled here — they go to
- * [HabitWidgetActionReceiver], which queues them in [HabitWidgetQueue] for Angular.
+ * snapshot pushed by Angular. One tile is one launcher cell: the widget is divided into
+ * as many columns and rows as it spans cells, and each habit icon is as large as the
+ * cell allows. Habits that do not fit are not shown; extra space stays empty.
  *
- * The widget is never "live": it shows the last snapshot plus the taps queued since.
+ * Taps are not handled here — they go to [HabitWidgetActionReceiver], which records
+ * them for Angular. The widget is never "live": it shows the last snapshot plus the taps
+ * queued since (the only live parts are the Chronometer clocks of running timers).
  * Once the snapshot's day is over (past midnight) it says so, starts the new day from
  * zero, and waits for the refresh button (or any app launch) to bring fresh data.
  */
@@ -37,7 +46,7 @@ class HabitWidgetProvider : AppWidgetProvider() {
         updateAll(context, appWidgetManager, appWidgetIds)
     }
 
-    /** The user resized the widget: the banner only fits above a certain height. */
+    /** The user resized the widget: the number of columns and rows changes. */
     override fun onAppWidgetOptionsChanged(
         context: Context,
         appWidgetManager: AppWidgetManager,
@@ -50,8 +59,8 @@ class HabitWidgetProvider : AppWidgetProvider() {
 
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
-        // Last habits widget removed: no more midnight redraw needed.
-        cancelStaleAlarm(context)
+        // Last habits widget removed: no more wake-ups needed.
+        cancelWakeAlarm(context)
     }
 
     companion object {
@@ -61,14 +70,29 @@ class HabitWidgetProvider : AppWidgetProvider() {
         // reusing the task widget's code 0 for the same activity would overwrite it.
         private const val REQ_REFRESH = 7301
         private const val REQ_OPEN_APP = 7302
-        private const val REQ_CLICK_TEMPLATE = 7303
-        private const val REQ_STALE_ALARM = 7304
-
-        /** Below this widget height (dp) there is no room for the text banner. */
-        private const val BANNER_MIN_HEIGHT_DP = 72
+        private const val REQ_TILE = 7303
+        private const val REQ_WAKE_ALARM = 7304
 
         /** Redraw this long after midnight, so the new day has certainly begun. */
         private const val STALE_ALARM_SLACK_MS = 1_000L
+
+        /** Redraw this long after a countdown ends, so it has certainly run out. */
+        private const val COUNTDOWN_ALARM_SLACK_MS = 300L
+
+        // Android's documented widget sizing: a widget n cells wide is about 70n - 30 dp.
+        private const val CELL_DP = 70f
+        private const val CELL_MARGIN_DP = 30f
+        private const val DEFAULT_WIDTH_DP = 180
+        private const val DEFAULT_HEIGHT_DP = 40
+        private const val MAX_COLS = 12
+        private const val MAX_ROWS = 8
+        private const val MAX_TILES = 36
+
+        /** Tile bitmaps are drawn this many pixels wide (clamped), then scaled to the cell. */
+        private const val MIN_TILE_PX = 96
+        private const val MAX_TILE_PX = 220
+
+        private const val TILE_URI_PREFIX = "habitwidget://tap/"
 
         private fun widgetIds(context: Context, appWidgetManager: AppWidgetManager): IntArray =
             appWidgetManager.getAppWidgetIds(
@@ -103,47 +127,136 @@ class HabitWidgetProvider : AppWidgetProvider() {
             appWidgetManager: AppWidgetManager,
             appWidgetIds: IntArray
         ) {
+            val now = System.currentTimeMillis()
+            // Countdowns that ran out become counts first, so every widget agrees.
+            HabitWidgetQueue.settleExpiredCountdowns(context, now)
+
             val snapshot = loadSnapshot(context)
-            val isStale = HabitWidgetData.isStale(snapshot.validUntil, System.currentTimeMillis())
+            val isStale = HabitWidgetData.isStale(snapshot.validUntil, now)
+            val displays = HabitWidgetData.display(
+                snapshot,
+                HabitWidgetQueue.peekEvents(context),
+                HabitWidgetQueue.runningTimers(context),
+                HabitWidgetQueue.countdowns(context),
+                now
+            )
+            val glyphs = HashMap<String, Bitmap?>()
             for (appWidgetId in appWidgetIds) {
-                updateWidget(context, appWidgetManager, appWidgetId, isStale)
+                try {
+                    updateWidget(
+                        context, appWidgetManager, appWidgetId, displays, snapshot.icons,
+                        glyphs, isStale
+                    )
+                } catch (e: Exception) {
+                    // One broken widget must not stop the others (or the alarm below).
+                    Log.e(TAG, "Failed to update habits widget", e)
+                }
             }
-            // setRemoteAdapter alone does not re-run the factory's onDataSetChanged()
-            // when the adapter intent is unchanged (it always is: same id, same Uri).
-            appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetIds, R.id.widget_habit_grid)
-            scheduleStaleAlarm(context, snapshot.validUntil)
+            scheduleWakeAlarm(
+                context,
+                snapshot.validUntil,
+                HabitWidgetQueue.nextCountdownEnd(context)
+            )
+        }
+
+        /** Columns, rows and the size of one cell of a widget, from its reported size. */
+        private class GridMetrics(val cols: Int, val rows: Int, val slotDp: Float)
+
+        private fun gridMetrics(context: Context, options: Bundle?): GridMetrics {
+            val isLandscape =
+                context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            // The launcher reports a range of sizes; which end applies depends on rotation.
+            var widthDp = options?.getInt(
+                if (isLandscape) AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH
+                else AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH,
+                0
+            ) ?: 0
+            var heightDp = options?.getInt(
+                if (isLandscape) AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT
+                else AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT,
+                0
+            ) ?: 0
+            if (widthDp <= 0) widthDp = DEFAULT_WIDTH_DP
+            if (heightDp <= 0) heightDp = DEFAULT_HEIGHT_DP
+            val cols = ((widthDp + CELL_MARGIN_DP) / CELL_DP + 0.2f).toInt().coerceIn(1, MAX_COLS)
+            val rows = ((heightDp + CELL_MARGIN_DP) / CELL_DP + 0.2f).toInt().coerceIn(1, MAX_ROWS)
+            val slotDp = minOf(widthDp.toFloat() / cols, heightDp.toFloat() / rows)
+            return GridMetrics(cols, rows, slotDp)
+        }
+
+        /** Decodes (and caches per update) the PNG Angular rendered for an icon name. */
+        private fun glyphFor(
+            name: String?,
+            icons: Map<String, String>,
+            cache: HashMap<String, Bitmap?>
+        ): Bitmap? {
+            if (name == null) return null
+            if (cache.containsKey(name)) return cache[name]
+            val bitmap = try {
+                val encoded = icons[name]
+                if (encoded == null) {
+                    null
+                } else {
+                    val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            } catch (e: Exception) {
+                null
+            }
+            cache[name] = bitmap
+            return bitmap
         }
 
         private fun updateWidget(
             context: Context,
             appWidgetManager: AppWidgetManager,
             appWidgetId: Int,
+            displays: List<HabitDisplay>,
+            icons: Map<String, String>,
+            glyphCache: HashMap<String, Bitmap?>,
             isStale: Boolean
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_habit_list)
+            val metrics = gridMetrics(context, appWidgetManager.getAppWidgetOptions(appWidgetId))
+            val density = context.resources.displayMetrics.density
 
-            // Habit tiles
-            val serviceIntent = Intent(context, HabitWidgetService::class.java).apply {
-                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-                data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
-            }
-            views.setRemoteAdapter(R.id.widget_habit_grid, serviceIntent)
-            views.setEmptyView(R.id.widget_habit_grid, R.id.widget_habit_empty)
+            val shown = displays.take(minOf(metrics.cols * metrics.rows, MAX_TILES))
+            val tilePx = (metrics.slotDp * density).toInt().coerceIn(MIN_TILE_PX, MAX_TILE_PX)
+            val clockSizeDp = (metrics.slotDp * 0.18f).coerceIn(9f, 24f)
 
-            // One template for all tile taps. Explicit component, and the receiver is
-            // not exported, so no other app can inject habit taps. MUTABLE is required
-            // for the per-tile fill-in extras.
-            val clickIntent = Intent(context, HabitWidgetActionReceiver::class.java).apply {
-                action = HabitWidgetActionReceiver.ACTION_HABIT_CLICK
+            // The grid is rebuilt from scratch. It always has every row and column (empty
+            // cells included) so each tile keeps the size of one cell even when there are
+            // fewer habits than cells.
+            views.removeAllViews(R.id.widget_habit_rows)
+            var index = 0
+            for (r in 0 until metrics.rows) {
+                val row = RemoteViews(context.packageName, R.layout.widget_habit_row)
+                for (c in 0 until metrics.cols) {
+                    val tile = RemoteViews(context.packageName, R.layout.widget_habit_item)
+                    if (index < shown.size) {
+                        bindTile(context, tile, shown[index], icons, glyphCache, tilePx, clockSizeDp)
+                    }
+                    row.addView(R.id.widget_habit_row, tile)
+                    index++
+                }
+                views.addView(R.id.widget_habit_rows, row)
             }
-            val clickPendingIntent = PendingIntent.getBroadcast(
-                context, REQ_CLICK_TEMPLATE, clickIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+
+            val openAppIntent = Intent(context, CapacitorMainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val openAppPendingIntent = PendingIntent.getActivity(
+                context, REQ_OPEN_APP, openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            views.setPendingIntentTemplate(R.id.widget_habit_grid, clickPendingIntent)
+            views.setViewVisibility(
+                R.id.widget_habit_empty,
+                if (displays.isEmpty()) View.VISIBLE else View.GONE
+            )
+            views.setOnClickPendingIntent(R.id.widget_habit_empty, openAppPendingIntent)
 
-            // Refresh button: opens the app with a flag; the app closes itself again
-            // after it has pushed fresh data (see HabitWidgetRefreshGate).
+            // Refresh button: top-left corner. Opens the app with a flag; the app closes
+            // itself again after it has pushed fresh data (see HabitWidgetRefreshGate).
             val refreshIntent = Intent(context, CapacitorMainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra(HabitWidgetRefreshGate.EXTRA_REFRESH_AND_CLOSE, true)
@@ -158,78 +271,135 @@ class HabitWidgetProvider : AppWidgetProvider() {
                 context.getString(R.string.widget_habits_refresh)
             )
 
-            // "No habits" text: plain open-app tap
-            val openAppIntent = Intent(context, CapacitorMainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            val openAppPendingIntent = PendingIntent.getActivity(
-                context, REQ_OPEN_APP, openAppIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            views.setOnClickPendingIntent(R.id.widget_habit_empty, openAppPendingIntent)
-
-            // Outdated statement. The refresh button turns amber at every size; the
-            // text banner only appears when the widget is tall enough to hold it.
-            val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
-            val heightDp = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0) ?: 0
-            val showBanner = isStale && heightDp >= BANNER_MIN_HEIGHT_DP
-            views.setViewVisibility(
-                R.id.widget_habit_banner,
-                if (showBanner) View.VISIBLE else View.GONE
-            )
-            views.setImageViewResource(
-                R.id.widget_habit_refresh_bg,
-                if (isStale) R.drawable.widget_habit_circle_outdated
-                else R.drawable.widget_habit_circle_open
+            // Outdated statement: the button turns amber at every size and, when there is
+            // room for it (two or more columns), grows an "Outdated" label.
+            views.setInt(
+                R.id.widget_habit_refresh,
+                "setBackgroundResource",
+                if (isStale) R.drawable.widget_habit_pill_outdated
+                else R.drawable.widget_habit_pill_open
             )
             views.setInt(
                 R.id.widget_habit_refresh_icon,
                 "setColorFilter",
                 if (isStale) Color.WHITE else context.getColor(R.color.widget_ink)
             )
+            views.setViewVisibility(
+                R.id.widget_habit_banner,
+                if (isStale && metrics.cols >= 2) View.VISIBLE else View.GONE
+            )
 
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
 
-        private fun staleAlarmPendingIntent(context: Context): PendingIntent {
+        /** Fills one tile: its bitmap, the live clock if a timer runs, and the tap. */
+        private fun bindTile(
+            context: Context,
+            tile: RemoteViews,
+            display: HabitDisplay,
+            icons: Map<String, String>,
+            glyphCache: HashMap<String, Bitmap?>,
+            tilePx: Int,
+            clockSizeDp: Float
+        ) {
+            val habit = display.habit
+            tile.setImageViewBitmap(
+                R.id.widget_habit_tile,
+                HabitTileRenderer.render(
+                    context, display, glyphFor(habit.icon, icons, glyphCache), tilePx
+                )
+            )
+
+            // Live clock. A running stopwatch counts up from the time tracked today, a
+            // running countdown counts down to zero. Both tick inside the launcher, with
+            // no widget update per second. Hidden (and stopped) otherwise.
+            if (HabitWidgetData.usesChronometer(display)) {
+                val isCountDown = habit.kind == HabitKind.COUNTDOWN
+                val base = if (isCountDown) {
+                    SystemClock.elapsedRealtime() + display.timeMs
+                } else {
+                    SystemClock.elapsedRealtime() - display.timeMs
+                }
+                tile.setChronometerCountDown(R.id.widget_habit_chrono, isCountDown)
+                tile.setChronometer(R.id.widget_habit_chrono, base, null, true)
+                tile.setTextViewTextSize(
+                    R.id.widget_habit_chrono, TypedValue.COMPLEX_UNIT_DIP, clockSizeDp
+                )
+                tile.setViewVisibility(R.id.widget_habit_chrono, View.VISIBLE)
+            } else {
+                tile.setChronometer(R.id.widget_habit_chrono, SystemClock.elapsedRealtime(), null, false)
+                tile.setViewVisibility(R.id.widget_habit_chrono, View.GONE)
+            }
+
+            tile.setContentDescription(R.id.widget_habit_item, habit.title)
+            // Habits not scheduled for the displayed day ignore taps, like in the app.
+            if (habit.dayEnabled) {
+                // One PendingIntent per habit: they are told apart by the data Uri
+                // (extras do not count), so each tile keeps its own habit id.
+                val tapIntent = Intent(context, HabitWidgetActionReceiver::class.java).apply {
+                    action = HabitWidgetActionReceiver.ACTION_HABIT_CLICK
+                    data = Uri.parse(TILE_URI_PREFIX + Uri.encode(habit.id))
+                    putExtra(HabitWidgetActionReceiver.EXTRA_HABIT_ID, habit.id)
+                }
+                val tapPendingIntent = PendingIntent.getBroadcast(
+                    context, REQ_TILE, tapIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                tile.setOnClickPendingIntent(R.id.widget_habit_item, tapPendingIntent)
+            }
+        }
+
+        private fun wakeAlarmPendingIntent(context: Context): PendingIntent {
             val intent = Intent(context, HabitWidgetActionReceiver::class.java).apply {
                 action = HabitWidgetActionReceiver.ACTION_STALE_ALARM
             }
             return PendingIntent.getBroadcast(
-                context, REQ_STALE_ALARM, intent,
+                context, REQ_WAKE_ALARM, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
 
         /**
-         * Wakes the widget just after the snapshot's day ends so it can say "outdated"
-         * without anyone touching it. Inexact on purpose (no exact-alarm permission,
-         * and a few minutes' delay is harmless); a missed alarm is still caught by
-         * the next tap, resize or hourly system update.
+         * One alarm wakes the widget at the next moment its picture changes without any
+         * tap: just after midnight ("outdated") or just after a running countdown ends
+         * (the count goes up). A countdown end uses an exact alarm when the app is
+         * allowed to set one (it declares SCHEDULE_EXACT_ALARM), otherwise an inexact
+         * one, which can be a little late. A missed alarm is still caught by the next
+         * tap, resize or hourly system update.
          */
-        private fun scheduleStaleAlarm(context: Context, validUntil: Long?) {
+        private fun scheduleWakeAlarm(context: Context, validUntil: Long?, countdownEnd: Long?) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
                 ?: return
-            val pendingIntent = staleAlarmPendingIntent(context)
-            if (validUntil == null || validUntil <= System.currentTimeMillis()) {
+            val pendingIntent = wakeAlarmPendingIntent(context)
+            val now = System.currentTimeMillis()
+            val staleAt = validUntil?.takeIf { it > now }?.plus(STALE_ALARM_SLACK_MS)
+            val endAt = countdownEnd?.takeIf { it > now }?.plus(COUNTDOWN_ALARM_SLACK_MS)
+            val target = listOfNotNull(staleAt, endAt).minOrNull()
+            if (target == null) {
                 alarmManager.cancel(pendingIntent)
                 return
             }
+            val wantsExact = endAt != null && target == endAt
             try {
-                alarmManager.setAndAllowWhileIdle(
-                    AlarmManager.RTC,
-                    validUntil + STALE_ALARM_SLACK_MS,
-                    pendingIntent
-                )
+                val canExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    alarmManager.canScheduleExactAlarms()
+                } else {
+                    true
+                }
+                if (wantsExact && canExact) {
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
+                } else {
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to schedule habit widget midnight redraw", e)
+                Log.w(TAG, "Failed to schedule habit widget wake-up", e)
             }
         }
 
-        private fun cancelStaleAlarm(context: Context) {
+        private fun cancelWakeAlarm(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
                 ?: return
-            alarmManager.cancel(staleAlarmPendingIntent(context))
+            alarmManager.cancel(wakeAlarmPendingIntent(context))
         }
     }
 }
