@@ -7,15 +7,19 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.superproductivity.superproductivity.App
 import com.superproductivity.superproductivity.BuildConfig
+import com.superproductivity.superproductivity.CapacitorMainActivity
+import com.superproductivity.superproductivity.FullscreenActivity
 import com.superproductivity.superproductivity.FullscreenActivity.Companion.WINDOW_INTERFACE_PROPERTY
 import com.superproductivity.superproductivity.app.LaunchDecider
 import com.superproductivity.superproductivity.review.InAppReview
+import com.superproductivity.superproductivity.service.BackgroundReminderSettingsStore
 import com.superproductivity.superproductivity.service.BackgroundSyncCredentialStore
 import com.superproductivity.superproductivity.service.FocusModeForegroundService
 import com.superproductivity.superproductivity.service.ForegroundServiceFailure
@@ -23,10 +27,13 @@ import com.superproductivity.superproductivity.service.ReminderNotificationHelpe
 import com.superproductivity.superproductivity.service.RemoteTrackingNotificationHelper
 import com.superproductivity.superproductivity.service.SyncReminderScheduler
 import com.superproductivity.superproductivity.service.TrackingForegroundService
+import com.superproductivity.superproductivity.share.CaptureKeyStore
+import com.superproductivity.superproductivity.share.ShareUploadWorker
 import com.superproductivity.superproductivity.widget.CaptureInbox
 import com.superproductivity.superproductivity.widget.HabitWidgetProvider
 import com.superproductivity.superproductivity.widget.HabitWidgetQueue
 import com.superproductivity.superproductivity.widget.HabitWidgetRefreshGate
+import com.superproductivity.superproductivity.widget.NotificationActionQueue
 import com.superproductivity.superproductivity.widget.ReminderDoneQueue
 import com.superproductivity.superproductivity.widget.ReminderSnoozeQueue
 import com.superproductivity.superproductivity.widget.ReminderTapQueue
@@ -91,6 +98,32 @@ class JavaScriptInterface(
         return "${versionName}_L$launchMode"
     }
 
+    /**
+     * Online-mode sunset (#8832): the web bundle calls this once it has written
+     * and verified the native-store backup, which the offline app restores on
+     * its blank first start. Only the legacy online activity may hand over, so a
+     * misdetecting offline caller can never trigger a restart.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun switchToOfflineMode(): Boolean {
+        if (activity !is FullscreenActivity || !LaunchDecider(activity).switchToOfflineMode()) {
+            return false
+        }
+        activity.runOnUiThread {
+            activity.startActivity(Intent(activity, CapacitorMainActivity::class.java))
+            activity.finish()
+        }
+        return true
+    }
+
+    // Tells the web bundle that snooze/tap events carry the reminder type, so it
+    // may schedule native deadline alarms (online-only mode can pair a newer
+    // bundle with an older APK that lacks this).
+    @Suppress("unused")
+    @JavascriptInterface
+    fun supportsTypedReminderActions(): Boolean = true
+
     @Suppress("unused")
     @JavascriptInterface
     fun getTextZoom(): Int {
@@ -109,6 +142,30 @@ class JavaScriptInterface(
         activity.runOnUiThread {
             InAppReview.request(activity)
         }
+    }
+
+    // Tactile confirmation for touch gestures. performHapticFeedback follows the
+    // system "touch feedback" setting and needs no VIBRATE permission. Unknown
+    // types are ignored so a newer bundle can't crash an older shell's mapping.
+    @Suppress("unused")
+    @JavascriptInterface
+    fun performHapticFeedback(type: String) {
+        val constant = when (type) {
+            "confirm" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                HapticFeedbackConstants.CONFIRM
+            } else {
+                HapticFeedbackConstants.VIRTUAL_KEY
+            }
+            "threshold" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE
+            } else {
+                HapticFeedbackConstants.CLOCK_TICK
+            }
+            "longPress" -> HapticFeedbackConstants.LONG_PRESS
+            else -> return
+        }
+        // JavascriptInterface calls arrive on a background thread.
+        webView.post { webView.performHapticFeedback(constant) }
     }
 
     @Suppress("unused")
@@ -154,14 +211,22 @@ class JavaScriptInterface(
         callJavaScriptFunction(FN_PREFIX + "clearDbCallback(" + JSONObject.quote(requestId) + ")")
     }
 
+    /** The web app finished initialising, including after a reload. */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun notifyFrontendReady() {
+        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
+            activity.runOnUiThread {
+                activity.onFrontendReady()
+            }
+        }
+    }
+
+    /** The former name of [notifyFrontendReady], still called by older web bundles. */
     @Suppress("unused")
     @JavascriptInterface
     fun triggerGetShareData() {
-        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
-            activity.runOnUiThread {
-                activity.flushPendingShareIntent()
-            }
-        }
+        notifyFrontendReady()
     }
 
     @Suppress("unused")
@@ -191,30 +256,7 @@ class JavaScriptInterface(
     @JavascriptInterface
     fun stopTrackingService() {
         safeCall("Failed to stop tracking service") {
-            val intent = Intent(activity, TrackingForegroundService::class.java)
-            if (TrackingForegroundService.isStartPending || TrackingForegroundService.isTracking) {
-                // A startForegroundService() may still be promoting: stopping via
-                // stopService() now could tear it down before startForeground()
-                // runs and crash with ForegroundServiceDidNotStartInTimeException.
-                // Routing as ACTION_STOP through onStartCommand lets it promote
-                // first, then stop cleanly.
-                intent.action = TrackingForegroundService.ACTION_STOP
-                try {
-                    activity.startService(intent)
-                } catch (e: IllegalStateException) {
-                    // App is in the background: startService() is disallowed here.
-                    // Only fall back to stopService() if no start is still pending
-                    // — stopping a not-yet-promoted service would re-trigger the
-                    // same crash. If a start IS pending, leave it: the pending
-                    // start promotes and a later foreground sync stops it cleanly.
-                    Log.d(TAG, "stopTrackingService: app backgrounded, falling back to stopService()", e)
-                    if (!TrackingForegroundService.isStartPending) {
-                        activity.stopService(Intent(activity, TrackingForegroundService::class.java))
-                    }
-                }
-            } else {
-                activity.stopService(intent)
-            }
+            TrackingForegroundService.requestStop(activity)
         }
     }
 
@@ -226,6 +268,9 @@ class JavaScriptInterface(
                 action = TrackingForegroundService.ACTION_UPDATE
                 putExtra(TrackingForegroundService.EXTRA_TIME_SPENT, timeSpentMs)
             }
+            // Plain startService is safe: the service is either already started
+            // (exempt from the background-start ban) or, after a restore in a new
+            // process, this comes from the JS recovery at launch or onResume.
             activity.startService(intent)
         }
     }
@@ -233,14 +278,15 @@ class JavaScriptInterface(
     @Suppress("unused")
     @JavascriptInterface
     fun getTrackingElapsed(): String {
-        val taskId = TrackingForegroundService.currentTaskId
-        val elapsedMs = TrackingForegroundService.getElapsedMs()
-        val isTracking = TrackingForegroundService.isTracking
-        return if (isTracking && taskId != null) {
-            """{"taskId":"$taskId","elapsedMs":$elapsedMs}"""
-        } else {
-            "null"
-        }
+        // After a process kill the companion is empty but the session may be
+        // persisted; restoring it here is what lets the JS cold-start recovery
+        // credit the time tracked while the process was gone (#7390).
+        val snapshot = TrackingForegroundService.snapshotForBridge(activity) ?: return "null"
+        return JSONObject()
+            .put("taskId", snapshot.taskId)
+            .put("elapsedMs", snapshot.elapsedMs)
+            .put("resume", snapshot.resume)
+            .toString()
     }
 
     @Suppress("unused")
@@ -464,16 +510,63 @@ class JavaScriptInterface(
         }
     }
 
+    /**
+     * Non-destructive read of the shares the app may import, as a JSON array of
+     * v1 capture payloads with their `id`, oldest first. Takes over shares still
+     * waiting for their SuperSync upload (none in flight), since the app is
+     * open, and moves a share queued by the previous app version into the
+     * inbox first. Returns null if the inbox could not be read.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getPendingShares(): String? {
+        return try {
+            val inbox = CaptureInbox.forContext(activity)
+            ShareIntentQueue.migrateInto(activity, inbox)
+            for (id in inbox.takeOverUploads()) {
+                ShareUploadWorker.cancel(activity, id)
+            }
+            inbox.pendingSharesJson()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read shares from the capture inbox", e)
+            null
+        }
+    }
+
+    /**
+     * Mirrors the account's SuperSync capture public key (base64 SPKI) while
+     * capture is on; an empty string clears it and stops share uploads.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun setCapturePublicKey(publicKeySpki: String) {
+        safeCall("Failed to set capture public key") {
+            CaptureKeyStore.set(activity, publicKeySpki)
+        }
+    }
+
     /** Delete one capture after the app has persisted its task. */
     @Suppress("unused")
     @JavascriptInterface
     fun acknowledgeCapture(id: String): Boolean {
-        return try {
+        val isAcknowledged = try {
             CaptureInbox.forContext(activity).acknowledge(id)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to acknowledge capture", e)
             false
         }
+        // The widget lists unacknowledged quick adds as pending. Its snapshot
+        // push may run before this and is skipped when unchanged (a quick add
+        // short-syntaxed off Today), so redraw here or the pending row lingers.
+        // Separate try: a failed redraw must not report the ack as failed.
+        if (isAcknowledged) {
+            try {
+                TaskListWidgetProvider.refreshAll(activity)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh widget after acknowledge", e)
+            }
+        }
+        return isAcknowledged
     }
 
     /**
@@ -494,6 +587,147 @@ class JavaScriptInterface(
     @JavascriptInterface
     fun updateWidget() {
         TaskListWidgetProvider.refreshAll(activity)
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getReminderTapQueue(): String? {
+        return ReminderTapQueue.getAndClear(activity)
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getReminderDoneQueue(): String? {
+        return ReminderDoneQueue.getAndClear(activity)
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getReminderSnoozeQueue(): String? {
+        return ReminderSnoozeQueue.getAndClear(activity)
+    }
+
+    /**
+     * Tracking notification Pause/Done taps, applied natively already (#10683).
+     * JSON array of `{type, taskId, elapsedMs, at}` or null; clears the queue.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getTrackingActionQueue(): String? {
+        return NotificationActionQueue.getAndClearTracking(activity)
+    }
+
+    /**
+     * Focus-mode notification Pause/Resume/Skip/Complete taps (#10683).
+     * JSON array of `{type, at}` or null; clears the queue.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getFocusActionQueue(): String? {
+        return NotificationActionQueue.getAndClearFocus(activity)
+    }
+
+    /** Epoch ms of the latest remote-tracking Stop tap, or null; clears it. */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun getRemoteTrackingStopQueue(): String? {
+        return NotificationActionQueue.getAndClearRemoteStop(activity)
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun setSuperSyncCredentials(baseUrl: String, accessToken: String) {
+        safeCall("Failed to set SuperSync credentials") {
+            BackgroundSyncCredentialStore.save(activity, baseUrl, accessToken)
+            SyncReminderScheduler.ensureScheduled(activity)
+        }
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun clearSuperSyncCredentials() {
+        safeCall("Failed to clear SuperSync credentials") {
+            BackgroundSyncCredentialStore.clear(activity)
+            CaptureKeyStore.set(activity, "")
+            SyncReminderScheduler.cancel(activity)
+        }
+    }
+
+    /**
+     * WebDAV/Nextcloud counterpart of [setSuperSyncCredentials]: the worker
+     * GETs [fileUrl] and reads reminders from it. Drops SuperSync credentials.
+     * The E2EE password comes via [setSuperSyncEncryptionPassword].
+     * NEVER log [authorization].
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun setFileSyncCredentials(fileUrl: String, authorization: String, isEncryptionExpected: Boolean) {
+        safeCall("Failed to set file sync credentials") {
+            BackgroundSyncCredentialStore.saveFileSync(
+                activity,
+                BackgroundSyncCredentialStore.FileSyncCredentials(fileUrl, authorization, isEncryptionExpected),
+            )
+            SyncReminderScheduler.ensureScheduled(activity)
+        }
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun clearFileSyncCredentials() {
+        safeCall("Failed to clear file sync credentials") {
+            BackgroundSyncCredentialStore.clearFileSync(activity)
+            if (!BackgroundSyncCredentialStore.hasAnyCredentials(activity)) {
+                SyncReminderScheduler.cancel(activity)
+            }
+        }
+    }
+
+    /**
+     * Mirrors the reminder settings [com.superproductivity.superproductivity.service.SyncReminderWorker]
+     * must honor when it schedules alarms from synced ops while the app is closed.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun setBackgroundReminderSettings(isDisabled: Boolean, useAlarmStyle: Boolean) {
+        safeCall("Failed to set background reminder settings") {
+            BackgroundReminderSettingsStore.save(activity, isDisabled, useAlarmStyle)
+        }
+    }
+
+    /**
+     * Mirrors the SuperSync E2EE password so background reminder sync can
+     * decrypt op payloads (encrypted end-to-end since #8670). Separate method
+     * from [setSuperSyncCredentials] so an old JS bundle paired with a new APK
+     * (and vice versa) keeps working. Empty string clears the password.
+     * NEVER log the password.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun setSuperSyncEncryptionPassword(password: String) {
+        safeCall("Failed to set SuperSync encryption password") {
+            BackgroundSyncCredentialStore.setEncryptionPassword(activity, password)
+        }
+    }
+
+    @Suppress("unused")
+    @JavascriptInterface
+    fun openAppNotificationSettings() {
+        safeCall("Failed to open notification settings") {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                }
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:${activity.packageName}")
+                }
+            }
+            activity.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
+    fun callJavaScriptFunction(script: String) {
+        webView.post { webView.evaluateJavascript(script) { } }
     }
 
     /**
@@ -552,140 +786,6 @@ class JavaScriptInterface(
     @JavascriptInterface
     fun habitWidgetRefreshDone() {
         HabitWidgetRefreshGate.complete()
-    }
-
-    /**
-     * Pull-based retrieval of pending share data persisted in SharedPreferences.
-     * Clears both SharedPreferences and in-memory pendingShareIntent to prevent duplicates.
-     * @return JSON string of share data, or null if none pending
-     */
-    @Suppress("unused")
-    @JavascriptInterface
-    fun getPendingShareData(): String? {
-        val data = ShareIntentQueue.getAndClear(activity)
-        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
-            activity.runOnUiThread {
-                activity.clearPendingShareIntent()
-            }
-        }
-        return data
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun getReminderTapQueue(): String? {
-        return ReminderTapQueue.getAndClear(activity)
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun getReminderDoneQueue(): String? {
-        return ReminderDoneQueue.getAndClear(activity)
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun getReminderSnoozeQueue(): String? {
-        return ReminderSnoozeQueue.getAndClear(activity)
-    }
-
-    /**
-     * Phase 1: Get partial text from the startup overlay without hiding it.
-     * The native input stays visible so the user sees a seamless transition.
-     */
-    @Suppress("unused")
-    @JavascriptInterface
-    fun getStartupOverlayPartialText(): String? {
-        var partialText: String? = null
-        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            activity.runOnUiThread {
-                partialText = activity.getStartupOverlayPartialText()
-                latch.countDown()
-            }
-            latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
-        }
-        return partialText
-    }
-
-    /**
-     * Phase 2: Hide the startup overlay after the web input is ready.
-     */
-    @Suppress("unused")
-    @JavascriptInterface
-    fun hideStartupOverlay() {
-        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
-            activity.runOnUiThread {
-                activity.hideStartupOverlay()
-            }
-        }
-    }
-
-    /**
-     * Dismiss startup overlay immediately (no partial text transfer).
-     */
-    @Suppress("unused")
-    @JavascriptInterface
-    fun dismissStartupOverlay() {
-        if (activity is com.superproductivity.superproductivity.CapacitorMainActivity) {
-            activity.runOnUiThread {
-                activity.dismissStartupOverlay()
-            }
-        }
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun setSuperSyncCredentials(baseUrl: String, accessToken: String) {
-        safeCall("Failed to set SuperSync credentials") {
-            BackgroundSyncCredentialStore.save(activity, baseUrl, accessToken)
-            SyncReminderScheduler.ensureScheduled(activity)
-        }
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun clearSuperSyncCredentials() {
-        safeCall("Failed to clear SuperSync credentials") {
-            BackgroundSyncCredentialStore.clear(activity)
-            SyncReminderScheduler.cancel(activity)
-        }
-    }
-
-    /**
-     * Mirrors the SuperSync E2EE password so background reminder sync can
-     * decrypt op payloads (encrypted end-to-end since #8670). Separate method
-     * from [setSuperSyncCredentials] so an old JS bundle paired with a new APK
-     * (and vice versa) keeps working. Empty string clears the password.
-     * NEVER log the password.
-     */
-    @Suppress("unused")
-    @JavascriptInterface
-    fun setSuperSyncEncryptionPassword(password: String) {
-        safeCall("Failed to set SuperSync encryption password") {
-            BackgroundSyncCredentialStore.setEncryptionPassword(activity, password)
-        }
-    }
-
-    @Suppress("unused")
-    @JavascriptInterface
-    fun openAppNotificationSettings() {
-        safeCall("Failed to open notification settings") {
-            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
-                }
-            } else {
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.parse("package:${activity.packageName}")
-                }
-            }
-            activity.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }
-    }
-
-    fun callJavaScriptFunction(script: String) {
-        webView.post { webView.evaluateJavascript(script) { } }
     }
 
     companion object {
