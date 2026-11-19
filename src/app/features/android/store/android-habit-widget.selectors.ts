@@ -49,11 +49,13 @@ export const isHabitDayEnabled = (counter: SimpleCounter, dayStr: string): boole
 };
 
 /**
- * A running stopwatch changes its value every tick. Whole minutes are all the widget
- * shows, so it only gets a new snapshot once a minute — except when the goal is
- * reached, which must show up at the exact moment.
+ * A stopwatch that runs inside the app changes its value every tick. Writing a new
+ * snapshot that often would be wasteful, so while it runs the value is rounded down to
+ * whole minutes — except when the goal is reached, which must show up at the exact
+ * moment. A stopwatch that is NOT running keeps its exact value (to the millisecond):
+ * the widget shows it with seconds and continues from it.
  */
-const quantizeTimeMs = (rawMs: number, goalMs: number): number => {
+const quantizeRunningTimeMs = (rawMs: number, goalMs: number): number => {
   const wholeMinutesMs = Math.floor(rawMs / MINUTE_MS) * MINUTE_MS;
   return rawMs >= goalMs ? Math.max(goalMs, wholeMinutesMs) : wholeMinutesMs;
 };
@@ -81,7 +83,10 @@ export const selectAndroidHabitWidgetData = createSelector(
         title: counter.title,
         kind,
         icon: counter.icon || null,
-        count: kind === 'time' ? quantizeTimeMs(rawCount, goal) : rawCount,
+        count:
+          kind === 'time' && counter.isOn
+            ? quantizeRunningTimeMs(rawCount, goal)
+            : rawCount,
         goal,
         dayEnabled: isHabitDayEnabled(counter, dayStr),
         isOn: (kind === 'time' || kind === 'countdown') && !!counter.isOn,

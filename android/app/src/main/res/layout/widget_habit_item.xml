@@ -14,14 +14,20 @@
         android:scaleType="fitCenter"
         android:contentDescription="@null" />
 
-    <!-- Live clock of a running stopwatch / countdown (m:ss). Shown only while running. -->
+    <!-- Live clock of a running stopwatch / countdown, in the tile's top-right corner
+         (m:ss, h:mm:ss above an hour). Size and padding are set by HabitWidgetProvider so
+         it lines up with the number the tile bitmap shows in the same spot. Shown only
+         while a timer runs. -->
     <Chronometer
         android:id="@+id/widget_habit_chrono"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
+        android:layout_gravity="top|end"
+        android:includeFontPadding="false"
+        android:fontFeatureSettings="tnum"
+        android:gravity="end"
         android:textColor="@color/widget_ink"
-        android:textSize="12sp"
+        android:textSize="11sp"
         android:textStyle="bold"
         android:visibility="gone" />
 </FrameLayout>

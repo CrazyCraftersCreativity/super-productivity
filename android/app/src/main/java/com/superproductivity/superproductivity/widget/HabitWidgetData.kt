@@ -294,23 +294,38 @@ object HabitWidgetData {
         }
     }
 
-    /** Small label in the tile corner: "3", "3/8", "12m", "/3", or empty when there is nothing to say. */
+    /**
+     * The number in the tile's top-right corner, always an exact value:
+     *  - counters: "3/8" (count/goal), or just the count when there is no goal
+     *  - stopwatch: the time tracked today as m:ss; empty while it runs (the live
+     *    Chronometer takes that spot)
+     *  - countdown: the time left while paused; empty while it runs (live Chronometer);
+     *    otherwise how often it has run, like a counter
+     * Empty when there is nothing to say.
+     */
     fun badgeText(display: HabitDisplay): String {
         val habit = display.habit
         return when (habit.kind) {
             HabitKind.BOOL -> ""
-            HabitKind.COUNT -> when {
-                habit.goal > 1L -> "${display.count}/${habit.goal}"
-                display.count > 0L -> display.count.toString()
-                else -> ""
+            HabitKind.COUNT -> countBadge(display)
+
+            HabitKind.TIME -> when {
+                display.isRunning -> ""
+                else -> formatElapsed(display.count)
             }
 
-            // The count itself is the big number in the middle; only the goal is added.
-            HabitKind.COUNTDOWN -> if (habit.goal > 1L) "/${habit.goal}" else ""
-
-            HabitKind.TIME ->
-                if (display.isRunning) "" else formatDuration(display.count)
+            HabitKind.COUNTDOWN -> when {
+                display.isPaused -> formatClock(display.timeMs)
+                usesChronometer(display) -> ""
+                else -> countBadge(display)
+            }
         }
+    }
+
+    private fun countBadge(display: HabitDisplay): String = when {
+        display.habit.goal > 1L -> "${display.count}/${display.habit.goal}"
+        display.count > 0L -> display.count.toString()
+        else -> ""
     }
 
     /** "m:ss" (or "h:mm:ss") for a time left, rounded up to whole seconds. */
@@ -326,14 +341,18 @@ object HabitWidgetData {
         }
     }
 
-    private fun formatDuration(ms: Long): String {
-        if (ms <= 0L) return ""
-        val minutes = (ms + 30_000L) / 60_000L
-        if (minutes < 1L) return "<1m"
-        if (minutes < 60L) return "${minutes}m"
-        val hours = minutes / 60L
-        val rest = minutes % 60L
-        return if (rest > 0L) "${hours}h${rest}m" else "${hours}h"
+    /** Time tracked, "m:ss" (or "h:mm:ss"), rounded down to whole seconds. Empty for zero. */
+    fun formatElapsed(ms: Long): String {
+        if (ms < 1000L) return ""
+        val totalSeconds = ms / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%d:%02d", minutes, seconds)
+        }
     }
 
     /** First letter of the title as a whole code point (safe for emoji), uppercased. */

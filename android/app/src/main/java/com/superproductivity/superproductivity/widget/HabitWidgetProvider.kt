@@ -236,9 +236,9 @@ class HabitWidgetProvider : AppWidgetProvider() {
             }
             val tileWidthPx = tileW.toInt().coerceAtLeast(MIN_TILE_PX)
             val tileHeightPx = tileH.toInt().coerceAtLeast(MIN_TILE_PX)
-            // The live clock is as large as the petal's text, but must fit its width.
-            val clockSizeDp = minOf(metrics.cellHeightDp * 0.28f, metrics.cellWidthDp * 0.17f)
-                .coerceIn(9f, 26f)
+            // The live clock of a running timer sits exactly where the bitmap draws its
+            // top-right number.
+            val badge = HabitTileRenderer.badgeSpec(metrics.cellWidthDp, metrics.cellHeightDp)
 
             // The grid is rebuilt from scratch. It always has every row and column (empty
             // cells included) so each tile keeps the size of one cell even when there are
@@ -252,7 +252,7 @@ class HabitWidgetProvider : AppWidgetProvider() {
                     if (index < shown.size) {
                         bindTile(
                             context, tile, shown[index], icons, glyphCache,
-                            tileWidthPx, tileHeightPx, clockSizeDp
+                            tileWidthPx, tileHeightPx, badge, density
                         )
                     }
                     row.addView(R.id.widget_habit_row, tile)
@@ -321,7 +321,8 @@ class HabitWidgetProvider : AppWidgetProvider() {
             glyphCache: HashMap<String, Bitmap?>,
             tileWidthPx: Int,
             tileHeightPx: Int,
-            clockSizeDp: Float
+            badge: HabitTileRenderer.BadgeSpec,
+            density: Float
         ) {
             val habit = display.habit
             tile.setImageViewBitmap(
@@ -332,7 +333,7 @@ class HabitWidgetProvider : AppWidgetProvider() {
                 )
             )
 
-            // Live clock. A running stopwatch counts up from the time tracked today, a
+            // Live clock (top-right). A running stopwatch counts up from the time tracked today, a
             // running countdown counts down to zero. Both tick inside the launcher, with
             // no widget update per second. Hidden (and stopped) otherwise.
             if (HabitWidgetData.usesChronometer(display)) {
@@ -345,7 +346,14 @@ class HabitWidgetProvider : AppWidgetProvider() {
                 tile.setChronometerCountDown(R.id.widget_habit_chrono, isCountDown)
                 tile.setChronometer(R.id.widget_habit_chrono, base, null, true)
                 tile.setTextViewTextSize(
-                    R.id.widget_habit_chrono, TypedValue.COMPLEX_UNIT_DIP, clockSizeDp
+                    R.id.widget_habit_chrono, TypedValue.COMPLEX_UNIT_DIP, badge.textSize
+                )
+                tile.setViewPadding(
+                    R.id.widget_habit_chrono,
+                    0,
+                    (badge.topInset * density).toInt(),
+                    (badge.rightInset * density).toInt(),
+                    0
                 )
                 tile.setViewVisibility(R.id.widget_habit_chrono, View.VISIBLE)
             } else {

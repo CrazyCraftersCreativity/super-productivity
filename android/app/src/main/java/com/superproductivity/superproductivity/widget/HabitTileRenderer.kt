@@ -16,12 +16,14 @@ import com.superproductivity.superproductivity.R
  * Draws one habit tile into a bitmap that has the size and shape of one launcher cell.
  *
  * The tile is a wide "petal": two large rounded corners (top-left, bottom-right) and two
- * small ones (top-right, bottom-left), with a blue edge.
+ * small ones (top-right, bottom-left), with a blue edge. The habit's own icon is in the
+ * middle in every state; the exact value (count/goal, or a timer) is the number in the
+ * top-right corner.
  *  - open:     outline only
  *  - partial:  a translucent blue "tank" fills from the bottom, level = progress
- *  - done:     the whole petal is filled with very translucent blue
- *  - running:  stronger blue fill (the live clock is a Chronometer view on top)
- *  - paused:   dashed edge, frozen time and a pause sign
+ *  - running:  stronger blue fill (the live clock is a Chronometer view in the top-right)
+ *  - paused:   dashed edge, a pause sign under the icon, the time left top-right
+ *  - done:     the whole tile faded, with a full-strength check on top
  *
  * The widget shows the bitmap in an ImageView with fitCenter. Because the bitmap has the
  * cell's own proportions, the petal fills any cell, wide or tall.
@@ -39,7 +41,29 @@ object HabitTileRenderer {
     // Wave on the surface of the tank, relative to the petal's shorter side
     private const val WAVE = 0.035f
 
-    private const val DISABLED_ALPHA = 115
+    // Top-right number, relative to the petal's height
+    private const val BADGE_SIZE = 0.145f
+    private const val BADGE_TOP = 0.10f
+    private const val BADGE_RIGHT = 0.17f
+
+    /** Faded habits (not scheduled today, or done) keep this much of their strength. */
+    private const val FADED_ALPHA = 115
+
+    /**
+     * Where the top-right number sits in a cell of [cellWidth] x [cellHeight] (any unit):
+     * its text size and its distance from the cell's top and right edge. The live clock
+     * of a running timer is a separate view and uses this to line up with the bitmap.
+     */
+    class BadgeSpec(val textSize: Float, val topInset: Float, val rightInset: Float)
+
+    fun badgeSpec(cellWidth: Float, cellHeight: Float): BadgeSpec {
+        val shapeHeight = cellHeight * (1f - 2f * INSET_Y)
+        return BadgeSpec(
+            textSize = shapeHeight * BADGE_SIZE,
+            topInset = cellHeight * INSET_Y + shapeHeight * BADGE_TOP,
+            rightInset = cellWidth * INSET_X + shapeHeight * BADGE_RIGHT
+        )
+    }
 
     fun render(
         context: Context,
@@ -62,9 +86,12 @@ object HabitTileRenderer {
         val fillDone = context.getColor(R.color.habit_fill_done)
         val fillRunning = context.getColor(R.color.habit_fill_running)
 
-        // Habits not scheduled for the displayed day are drawn faded and ignore taps.
-        val layer = if (!habit.dayEnabled) {
-            canvas.saveLayerAlpha(0f, 0f, w, h, DISABLED_ALPHA)
+        // A finished habit stays faded; a timer that is still going is never faded.
+        val isFinished = display.isDone && !display.isRunning && !display.isPaused
+        // Not-scheduled habits and finished habits are drawn faded. Not-scheduled ones
+        // also ignore taps; finished ones get the check below.
+        val layer = if (!habit.dayEnabled || isFinished) {
+            canvas.saveLayerAlpha(0f, 0f, w, h, FADED_ALPHA)
         } else {
             -1
         }
@@ -93,7 +120,7 @@ object HabitTileRenderer {
                 canvas.drawRect(shape, paint)
             }
 
-            display.isDone -> {
+            isFinished -> {
                 paint.color = fillDone
                 canvas.drawRect(shape, paint)
             }
@@ -109,7 +136,6 @@ object HabitTileRenderer {
         canvas.restore()
 
         // Edge: drawn inside the petal's outline; dashed while a countdown is paused.
-        val isPausedCountdown = habit.kind == HabitKind.COUNTDOWN && display.isPaused
         val half = edge / 2f
         val edgeRect = RectF(
             shape.left + half, shape.top + half, shape.right - half, shape.bottom - half
@@ -118,42 +144,25 @@ object HabitTileRenderer {
         edgePaint.style = Paint.Style.STROKE
         edgePaint.strokeWidth = edge
         edgePaint.color = colorBlue
-        if (isPausedCountdown) {
+        if (display.isPaused) {
             edgePaint.pathEffect = DashPathEffect(floatArrayOf(edge * 3f, edge * 2f), 0f)
         }
         canvas.drawPath(petalPath(edgeRect, big - half, small - half), edgePaint)
 
-        // Centre content, sized relative to the petal's height
+        // The habit's icon in the middle, in every state. Sized by the petal's height.
         val shh = shape.height()
-        when {
-            // The live clock is drawn by the Chronometer view above this bitmap.
-            HabitWidgetData.usesChronometer(display) -> Unit
-
-            // Finished yes/no habit: a check mark in place of its icon
-            habit.kind == HabitKind.BOOL && display.isDone ->
-                drawCheck(context, canvas, cx, cy, shh, colorAccent)
-
-            // Paused countdown: the time that is left, plus a pause sign
-            isPausedCountdown -> drawPaused(
-                canvas, shape, colorInk, HabitWidgetData.formatClock(display.timeMs)
-            )
-
-            // Countdown that has run out at least once today: how many times
-            habit.kind == HabitKind.COUNTDOWN && display.count > 0L && !display.isRunning ->
-                drawCenteredText(
-                    canvas, cx, cy, colorAccent, display.count.toString(),
-                    shh * numberScale(display.count)
-                )
-
-            glyph != null -> drawGlyph(canvas, cx, cy, shh, colorAccent, glyph)
-
+        if (glyph != null) {
+            drawGlyph(canvas, cx, cy, shh, colorAccent, glyph)
+        } else {
             // No icon (or a custom SVG icon that cannot be drawn here): first letter
-            else -> drawCenteredText(
-                canvas, cx, cy, colorAccent, HabitWidgetData.initialOf(habit.title), shh * 0.46f
-            )
+            drawLetter(canvas, cx, cy, colorAccent, HabitWidgetData.initialOf(habit.title), shh * 0.46f)
         }
 
-        // Count / goal in the top-right
+        if (display.isPaused) {
+            drawPauseSign(canvas, shape, edge, colorInk)
+        }
+
+        // Count/goal or timer in the top-right
         val badge = HabitWidgetData.badgeText(display)
         if (badge.isNotEmpty()) {
             drawBadge(canvas, shape, badge, colorInk)
@@ -161,6 +170,11 @@ object HabitTileRenderer {
 
         if (layer != -1) {
             canvas.restoreToCount(layer)
+        }
+
+        // The check is drawn after the faded layer is closed, so it keeps full strength.
+        if (isFinished && habit.dayEnabled) {
+            drawCheck(canvas, cx, cy, shh * 0.5f, colorAccent, colorSurface)
         }
         return bitmap
     }
@@ -200,13 +214,6 @@ object HabitTileRenderer {
         return path
     }
 
-    private fun numberScale(count: Long): Float = when {
-        count >= 1000L -> 0.30f
-        count >= 100L -> 0.38f
-        count >= 10L -> 0.46f
-        else -> 0.54f
-    }
-
     private fun drawGlyph(
         canvas: Canvas, cx: Float, cy: Float, shh: Float, color: Int, glyph: Bitmap
     ) {
@@ -216,14 +223,27 @@ object HabitTileRenderer {
         canvas.drawBitmap(glyph, null, RectF(cx - half, cy - half, cx + half, cy + half), paint)
     }
 
+    /** A bold check with a thin halo in the tile colour, so it reads over the icon. */
     private fun drawCheck(
-        context: Context, canvas: Canvas, cx: Float, cy: Float, shh: Float, color: Int
+        canvas: Canvas, cx: Float, cy: Float, size: Float, color: Int, haloColor: Int
     ) {
-        val drawable = context.getDrawable(R.drawable.ic_widget_habit_check)?.mutate() ?: return
-        val half = (shh * 0.26f).toInt()
-        drawable.setBounds(cx.toInt() - half, cy.toInt() - half, cx.toInt() + half, cy.toInt() + half)
-        drawable.setTint(color)
-        drawable.draw(canvas)
+        val unit = size / 24f
+        val left = cx - size / 2f
+        val top = cy - size / 2f
+        val path = Path()
+        path.moveTo(left + 20f * unit, top + 6f * unit)
+        path.lineTo(left + 9f * unit, top + 17f * unit)
+        path.lineTo(left + 4f * unit, top + 12f * unit)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+        paint.color = haloColor
+        paint.strokeWidth = 6f * unit
+        canvas.drawPath(path, paint)
+        paint.color = color
+        paint.strokeWidth = 3f * unit
+        canvas.drawPath(path, paint)
     }
 
     private fun textPaint(color: Int, textSize: Float, align: Paint.Align): Paint {
@@ -235,45 +255,35 @@ object HabitTileRenderer {
         return paint
     }
 
-    /** Text centred on ([cx], [cy]); [textSize] is in pixels. */
-    private fun drawCenteredText(
-        canvas: Canvas,
-        cx: Float,
-        cy: Float,
-        color: Int,
-        text: String,
-        textSize: Float,
-        yOffset: Float = 0f
+    private fun drawLetter(
+        canvas: Canvas, cx: Float, cy: Float, color: Int, text: String, textSize: Float
     ) {
         val paint = textPaint(color, textSize, Paint.Align.CENTER)
         val metrics = paint.fontMetrics
-        val baseline = cy + yOffset - (metrics.ascent + metrics.descent) / 2f
-        canvas.drawText(text, cx, baseline, paint)
+        canvas.drawText(text, cx, cy - (metrics.ascent + metrics.descent) / 2f, paint)
     }
 
-    private fun drawPaused(canvas: Canvas, shape: RectF, color: Int, time: String) {
+    /** Two small bars under the icon, at the bottom of the petal. */
+    private fun drawPauseSign(canvas: Canvas, shape: RectF, edge: Float, color: Int) {
         val shh = shape.height()
         val cx = shape.centerX()
-        val cy = shape.centerY()
-        // Long times ("1:00:00") get a smaller font so they stay inside the petal.
-        val size = minOf(shh * 0.30f, shape.width() * if (time.length > 5) 0.13f else 0.19f)
-        drawCenteredText(canvas, cx, cy, color, time, size, yOffset = -shh * 0.07f)
         val bars = Paint(Paint.ANTI_ALIAS_FLAG)
         bars.color = color
-        val barW = shh * 0.045f
-        val barH = shh * 0.14f
-        val top = cy + shh * 0.12f
-        val gap = shh * 0.04f
-        canvas.drawRoundRect(RectF(cx - gap - barW, top, cx - gap, top + barH), barW / 2f, barW / 2f, bars)
-        canvas.drawRoundRect(RectF(cx + gap, top, cx + gap + barW, top + barH), barW / 2f, barW / 2f, bars)
+        val barW = shh * 0.032f
+        val barH = shh * 0.115f
+        val gap = shh * 0.024f
+        val bottom = shape.bottom - edge - shh * 0.09f
+        val top = bottom - barH
+        canvas.drawRoundRect(RectF(cx - gap - barW, top, cx - gap, bottom), barW / 2f, barW / 2f, bars)
+        canvas.drawRoundRect(RectF(cx + gap, top, cx + gap + barW, bottom), barW / 2f, barW / 2f, bars)
     }
 
-    /** Small number in the top-right corner ("3/8", "12m"), in the small-corner area. */
+    /** The number in the top-right corner (count/goal, or a timer). */
     private fun drawBadge(canvas: Canvas, shape: RectF, text: String, inkColor: Int) {
         val shh = shape.height()
-        val paint = textPaint(inkColor, shh * 0.145f, Paint.Align.RIGHT)
-        val top = shape.top + shh * 0.10f
+        val paint = textPaint(inkColor, shh * BADGE_SIZE, Paint.Align.RIGHT)
+        val top = shape.top + shh * BADGE_TOP
         val baseline = top - paint.fontMetrics.ascent
-        canvas.drawText(text, shape.right - shh * 0.17f, baseline, paint)
+        canvas.drawText(text, shape.right - shh * BADGE_RIGHT, baseline, paint)
     }
 }
