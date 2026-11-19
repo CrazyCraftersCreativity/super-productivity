@@ -55,7 +55,7 @@
             android:layout_marginEnd="9dp"
             android:maxLines="1"
             android:text="@string/widget_habits_outdated"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/habit_on_outdated"
             android:textSize="10sp"
             android:textStyle="bold"
             android:visibility="gone" />

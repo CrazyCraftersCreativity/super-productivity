@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -27,8 +26,8 @@ import com.superproductivity.superproductivity.R
 /**
  * Home screen widget showing one tile per habit, read from the `widget_data_habits`
  * snapshot pushed by Angular. One tile is one launcher cell: the widget is divided into
- * as many columns and rows as it spans cells, and each habit icon is as large as the
- * cell allows. Habits that do not fit are not shown; extra space stays empty.
+ * as many columns and rows as it spans cells, and each habit tile (a wide blue petal,
+ * see [HabitTileRenderer]) fills its cell. Habits that do not fit are not shown; extra space stays empty.
  *
  * Taps are not handled here — they go to [HabitWidgetActionReceiver], which records
  * them for Angular. The widget is never "live": it shows the last snapshot plus the taps
@@ -88,9 +87,12 @@ class HabitWidgetProvider : AppWidgetProvider() {
         private const val MAX_ROWS = 8
         private const val MAX_TILES = 36
 
-        /** Tile bitmaps are drawn this many pixels wide (clamped), then scaled to the cell. */
-        private const val MIN_TILE_PX = 96
-        private const val MAX_TILE_PX = 220
+        /**
+         * A tile bitmap has the cell's proportions; its area is limited so that many tiles
+         * stay within the memory a widget may send to the launcher.
+         */
+        private const val MIN_TILE_PX = 64
+        private const val MAX_TILE_AREA_PX = 64_000
 
         private const val TILE_URI_PREFIX = "habitwidget://tap/"
 
@@ -159,8 +161,13 @@ class HabitWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        /** Columns, rows and the size of one cell of a widget, from its reported size. */
-        private class GridMetrics(val cols: Int, val rows: Int, val slotDp: Float)
+        /** Columns, rows and the size (dp) of one cell of a widget, from its reported size. */
+        private class GridMetrics(
+            val cols: Int,
+            val rows: Int,
+            val cellWidthDp: Float,
+            val cellHeightDp: Float
+        )
 
         private fun gridMetrics(context: Context, options: Bundle?): GridMetrics {
             val isLandscape =
@@ -180,8 +187,7 @@ class HabitWidgetProvider : AppWidgetProvider() {
             if (heightDp <= 0) heightDp = DEFAULT_HEIGHT_DP
             val cols = ((widthDp + CELL_MARGIN_DP) / CELL_DP + 0.2f).toInt().coerceIn(1, MAX_COLS)
             val rows = ((heightDp + CELL_MARGIN_DP) / CELL_DP + 0.2f).toInt().coerceIn(1, MAX_ROWS)
-            val slotDp = minOf(widthDp.toFloat() / cols, heightDp.toFloat() / rows)
-            return GridMetrics(cols, rows, slotDp)
+            return GridMetrics(cols, rows, widthDp.toFloat() / cols, heightDp.toFloat() / rows)
         }
 
         /** Decodes (and caches per update) the PNG Angular rendered for an icon name. */
@@ -221,8 +227,18 @@ class HabitWidgetProvider : AppWidgetProvider() {
             val density = context.resources.displayMetrics.density
 
             val shown = displays.take(minOf(metrics.cols * metrics.rows, MAX_TILES))
-            val tilePx = (metrics.slotDp * density).toInt().coerceIn(MIN_TILE_PX, MAX_TILE_PX)
-            val clockSizeDp = (metrics.slotDp * 0.18f).coerceIn(9f, 24f)
+            var tileW = metrics.cellWidthDp * density
+            var tileH = metrics.cellHeightDp * density
+            if (tileW * tileH > MAX_TILE_AREA_PX) {
+                val scale = Math.sqrt(MAX_TILE_AREA_PX / (tileW * tileH).toDouble()).toFloat()
+                tileW *= scale
+                tileH *= scale
+            }
+            val tileWidthPx = tileW.toInt().coerceAtLeast(MIN_TILE_PX)
+            val tileHeightPx = tileH.toInt().coerceAtLeast(MIN_TILE_PX)
+            // The live clock is as large as the petal's text, but must fit its width.
+            val clockSizeDp = minOf(metrics.cellHeightDp * 0.28f, metrics.cellWidthDp * 0.17f)
+                .coerceIn(9f, 26f)
 
             // The grid is rebuilt from scratch. It always has every row and column (empty
             // cells included) so each tile keeps the size of one cell even when there are
@@ -234,7 +250,10 @@ class HabitWidgetProvider : AppWidgetProvider() {
                 for (c in 0 until metrics.cols) {
                     val tile = RemoteViews(context.packageName, R.layout.widget_habit_item)
                     if (index < shown.size) {
-                        bindTile(context, tile, shown[index], icons, glyphCache, tilePx, clockSizeDp)
+                        bindTile(
+                            context, tile, shown[index], icons, glyphCache,
+                            tileWidthPx, tileHeightPx, clockSizeDp
+                        )
                     }
                     row.addView(R.id.widget_habit_row, tile)
                     index++
@@ -282,7 +301,8 @@ class HabitWidgetProvider : AppWidgetProvider() {
             views.setInt(
                 R.id.widget_habit_refresh_icon,
                 "setColorFilter",
-                if (isStale) Color.WHITE else context.getColor(R.color.widget_ink)
+                if (isStale) context.getColor(R.color.habit_on_outdated)
+                else context.getColor(R.color.habit_accent)
             )
             views.setViewVisibility(
                 R.id.widget_habit_banner,
@@ -299,14 +319,16 @@ class HabitWidgetProvider : AppWidgetProvider() {
             display: HabitDisplay,
             icons: Map<String, String>,
             glyphCache: HashMap<String, Bitmap?>,
-            tilePx: Int,
+            tileWidthPx: Int,
+            tileHeightPx: Int,
             clockSizeDp: Float
         ) {
             val habit = display.habit
             tile.setImageViewBitmap(
                 R.id.widget_habit_tile,
                 HabitTileRenderer.render(
-                    context, display, glyphFor(habit.icon, icons, glyphCache), tilePx
+                    context, display, glyphFor(habit.icon, icons, glyphCache),
+                    tileWidthPx, tileHeightPx
                 )
             )
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="habit_accent">#8FB2F5</color>
+    <color name="habit_fill_liquid">#616495ED</color>
+    <color name="habit_fill_done">#426495ED</color>
+    <color name="habit_fill_running">#8C6495ED</color>
+</resources>

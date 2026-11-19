@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Stopwatch running -->
-    <color name="widget_habit_running">#2E7D32</color>
-    <!-- Outdated marker -->
+    <!-- Habit tiles: Super Productivity blue (the "Today" colour) for the edge ... -->
+    <color name="habit_blue">#6495ED</color>
+    <!-- ... a deeper blue for icons, numbers and the refresh icon ... -->
+    <color name="habit_accent">#3566CC</color>
+    <!-- ... and the same blue, translucent, for the tank, done and running fills. -->
+    <color name="habit_fill_liquid">#4D6495ED</color>
+    <color name="habit_fill_done">#336495ED</color>
+    <color name="habit_fill_running">#806495ED</color>
+    <!-- Outdated marker and the dark text on it -->
     <color name="widget_habit_outdated">#F57C00</color>
+    <color name="habit_on_outdated">#1A1A1A</color>
 </resources>
