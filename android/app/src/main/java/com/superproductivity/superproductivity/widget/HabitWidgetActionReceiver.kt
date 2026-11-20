@@ -63,7 +63,9 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
             countdowns,
             now
         ).firstOrNull { it.habit.id == habitId }
-        if (display == null || !display.habit.dayEnabled) {
+        // Habits that are not scheduled for today are drawn faded but can still be used:
+        // they count like a finished habit that takes more entries.
+        if (display == null) {
             return
         }
 

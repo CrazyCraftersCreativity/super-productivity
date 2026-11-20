@@ -362,21 +362,19 @@ class HabitWidgetProvider : AppWidgetProvider() {
             }
 
             tile.setContentDescription(R.id.widget_habit_item, habit.title)
-            // Habits not scheduled for the displayed day ignore taps, like in the app.
-            if (habit.dayEnabled) {
-                // One PendingIntent per habit: they are told apart by the data Uri
-                // (extras do not count), so each tile keeps its own habit id.
-                val tapIntent = Intent(context, HabitWidgetActionReceiver::class.java).apply {
-                    action = HabitWidgetActionReceiver.ACTION_HABIT_CLICK
-                    data = Uri.parse(TILE_URI_PREFIX + Uri.encode(habit.id))
-                    putExtra(HabitWidgetActionReceiver.EXTRA_HABIT_ID, habit.id)
-                }
-                val tapPendingIntent = PendingIntent.getBroadcast(
-                    context, REQ_TILE, tapIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                tile.setOnClickPendingIntent(R.id.widget_habit_item, tapPendingIntent)
+            // Every habit can be tapped, also one that is not scheduled for the displayed
+            // day (it is only drawn faded). One PendingIntent per habit: they are told
+            // apart by the data Uri (extras do not count), so each tile keeps its own id.
+            val tapIntent = Intent(context, HabitWidgetActionReceiver::class.java).apply {
+                action = HabitWidgetActionReceiver.ACTION_HABIT_CLICK
+                data = Uri.parse(TILE_URI_PREFIX + Uri.encode(habit.id))
+                putExtra(HabitWidgetActionReceiver.EXTRA_HABIT_ID, habit.id)
             }
+            val tapPendingIntent = PendingIntent.getBroadcast(
+                context, REQ_TILE, tapIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            tile.setOnClickPendingIntent(R.id.widget_habit_item, tapPendingIntent)
         }
 
         private fun wakeAlarmPendingIntent(context: Context): PendingIntent {
@@ -392,10 +390,12 @@ class HabitWidgetProvider : AppWidgetProvider() {
         /**
          * One alarm wakes the widget at the next moment its picture changes without any
          * tap: just after midnight ("outdated") or just after a running countdown ends
-         * (the count goes up). A countdown end uses an exact alarm when the app is
-         * allowed to set one (it declares SCHEDULE_EXACT_ALARM), otherwise an inexact
-         * one, which can be a little late. A missed alarm is still caught by the next
-         * tap, resize or hourly system update.
+         * (the count goes up). The widget's live clock counts below zero if the redraw is
+         * late, so a countdown end must be exact:
+         *  - exact alarm, when the app may set one ("Alarms & reminders" permission);
+         *  - otherwise an alarm-clock alarm, which needs no permission and is exact, but
+         *    shows the usual alarm icon in the status bar while the countdown runs.
+         * Midnight is not time-critical and uses an inexact alarm.
          */
         private fun scheduleWakeAlarm(context: Context, validUntil: Long?, countdownEnd: Long?) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
@@ -418,6 +418,17 @@ class HabitWidgetProvider : AppWidgetProvider() {
                 }
                 if (wantsExact && canExact) {
                     alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
+                } else if (wantsExact) {
+                    val showIntent = PendingIntent.getActivity(
+                        context, REQ_OPEN_APP,
+                        Intent(context, CapacitorMainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        },
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    alarmManager.setAlarmClock(
+                        AlarmManager.AlarmClockInfo(target, showIntent), pendingIntent
+                    )
                 } else {
                     alarmManager.setAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
                 }

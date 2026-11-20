@@ -88,8 +88,8 @@ object HabitTileRenderer {
 
         // A finished habit stays faded; a timer that is still going is never faded.
         val isFinished = display.isDone && !display.isRunning && !display.isPaused
-        // Not-scheduled habits and finished habits are drawn faded. Not-scheduled ones
-        // also ignore taps; finished ones get the check below.
+        // Not-scheduled habits and finished habits are drawn faded (both can still be
+        // tapped); finished ones also get the check below.
         val layer = if (!habit.dayEnabled || isFinished) {
             canvas.saveLayerAlpha(0f, 0f, w, h, FADED_ALPHA)
         } else {
@@ -173,7 +173,7 @@ object HabitTileRenderer {
         }
 
         // The check is drawn after the faded layer is closed, so it keeps full strength.
-        if (isFinished && habit.dayEnabled) {
+        if (isFinished) {
             drawCheck(canvas, cx, cy, shh * 0.5f, colorAccent, colorSurface)
         }
         return bitmap
