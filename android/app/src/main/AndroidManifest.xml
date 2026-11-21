@@ -311,5 +311,24 @@
       android:name=".widget.HabitWidgetActionReceiver"
       android:exported="false" />
 
+    <!-- Open (unscheduled) tasks home screen widget. Same rule as above: only
+         APPWIDGET_UPDATE is listed; row clicks use explicit-component PendingIntents. -->
+    <receiver
+      android:name=".widget.OpenTasksWidgetProvider"
+      android:exported="true"
+      android:label="@string/widget_open_tasks_title">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/appwidget_info_open_tasks" />
+    </receiver>
+
+    <service
+      android:name=".widget.OpenTasksWidgetService"
+      android:exported="false"
+      android:permission="android.permission.BIND_REMOTEVIEWS" />
+
   </application>
 </manifest>

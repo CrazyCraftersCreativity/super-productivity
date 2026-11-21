@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_open_tasks_title">Unscheduled Tasks</string>
+    <string name="widget_open_tasks_header">Unscheduled</string>
+    <string name="widget_open_tasks_description">Open tasks without a planned day or repeat, with quick done action</string>
+    <string name="widget_open_tasks_empty">No unscheduled tasks</string>
+    <string name="widget_open_tasks_outdated">Outdated</string>
+    <string name="widget_open_tasks_refresh">Refresh tasks</string>
+</resources>

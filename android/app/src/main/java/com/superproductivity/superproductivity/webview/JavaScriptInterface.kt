@@ -33,6 +33,7 @@ import com.superproductivity.superproductivity.widget.CaptureInbox
 import com.superproductivity.superproductivity.widget.HabitWidgetProvider
 import com.superproductivity.superproductivity.widget.HabitWidgetQueue
 import com.superproductivity.superproductivity.widget.HabitWidgetRefreshGate
+import com.superproductivity.superproductivity.widget.OpenTasksWidgetProvider
 import com.superproductivity.superproductivity.widget.NotificationActionQueue
 import com.superproductivity.superproductivity.widget.ReminderDoneQueue
 import com.superproductivity.superproductivity.widget.ReminderSnoozeQueue
@@ -778,9 +779,19 @@ class JavaScriptInterface(
     }
 
     /**
-     * Angular has applied the queued habit taps and pushed fresh data. If the app was
-     * opened by the widget's refresh button, it goes back to the home screen shortly.
-     * No-op for any other launch.
+     * Re-render the open (unscheduled) tasks home screen widget from the current
+     * `widget_data_open_tasks` KeyValStore snapshot. Called by Angular after each push.
+     */
+    @Suppress("unused")
+    @JavascriptInterface
+    fun updateOpenTasksWidget() {
+        OpenTasksWidgetProvider.refreshAll(activity)
+    }
+
+    /**
+     * Angular has applied the queued widget taps and pushed fresh data. If the app was
+     * opened by the refresh button of the habits or open tasks widget, it goes back to
+     * the home screen shortly. No-op for any other launch.
      */
     @Suppress("unused")
     @JavascriptInterface

@@ -7,9 +7,9 @@ import android.os.Looper
 import java.lang.ref.WeakReference
 
 /**
- * Backs the habits widget's refresh button: the button opens the app (the only way to
- * run Angular), and this gate sends the app back to the home screen once Angular has
- * applied the queued taps and pushed a fresh snapshot.
+ * Backs the refresh button of the habits and open tasks widgets: the button opens the
+ * app (the only way to run Angular), and this gate sends the app back to the home
+ * screen once Angular has applied the queued taps and pushed a fresh snapshot.
  *
  * Armed by CapacitorMainActivity.handleIntent when the launching intent carries
  * [EXTRA_REFRESH_AND_CLOSE]; completed by Angular through the JavaScriptInterface

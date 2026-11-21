@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:paddingStart="10dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="4dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="4dp">
+
+        <!-- Refresh button. The pill drawable is inset, so the touch area (28dp high) is
+             larger than the visible pill. Turns amber and shows a label when outdated. -->
+        <LinearLayout
+            android:id="@+id/widget_open_refresh"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:background="@drawable/widget_habit_pill_open"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/widget_open_refresh_icon"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:layout_marginStart="9dp"
+                android:layout_marginEnd="9dp"
+                android:src="@drawable/ic_widget_habit_refresh"
+                android:contentDescription="@null" />
+
+            <TextView
+                android:id="@+id/widget_open_banner"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="-3dp"
+                android:layout_marginEnd="11dp"
+                android:maxLines="1"
+                android:text="@string/widget_open_tasks_outdated"
+                android:textColor="@color/habit_on_outdated"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/widget_open_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="@string/widget_open_tasks_header"
+            android:textColor="@color/widget_ink"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- FrameLayout, not View: plain View is not on the RemoteViews whitelist -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/widget_separator" />
+
+    <ListView
+        android:id="@+id/widget_open_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:scrollbars="none" />
+
+    <TextView
+        android:id="@+id/widget_open_empty"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:text="@string/widget_open_tasks_empty"
+        android:textColor="@color/widget_ink_muted"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:visibility="gone" />
+
+</LinearLayout>
