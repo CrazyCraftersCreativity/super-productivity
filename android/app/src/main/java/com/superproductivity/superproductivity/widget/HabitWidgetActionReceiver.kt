@@ -22,16 +22,8 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_HABIT_CLICK -> handleHabitClick(context, intent.getStringExtra(EXTRA_HABIT_ID))
-            ACTION_STALE_ALARM -> {
-                // Midnight passed, or a countdown ran out: book finished countdowns,
-                // redraw, and (if the app is alive) ask it to apply them.
-                val settled =
-                    HabitWidgetQueue.settleExpiredCountdowns(context, System.currentTimeMillis())
-                HabitWidgetProvider.refreshAll(context)
-                if (settled) {
-                    signalApp(context)
-                }
-            }
+            // Midnight passed: redraw, so the widget says "outdated".
+            ACTION_STALE_ALARM -> HabitWidgetProvider.refreshAll(context)
         }
     }
 
@@ -50,8 +42,6 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
             return
         }
         val now = System.currentTimeMillis()
-        // A countdown that has run out is booked first, so a tap starts a fresh one.
-        HabitWidgetQueue.settleExpiredCountdowns(context, now)
         val snapshot = HabitWidgetProvider.loadSnapshot(context)
         val countdowns = HabitWidgetQueue.countdowns(context)
         // Decide from the state the user is looking at (snapshot + queued taps), so
@@ -96,6 +86,11 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
                 HabitKind.COUNTDOWN -> {
                     val state = countdowns[habitId]
                     when {
+                        // At or below zero: this tap finishes it. One count is booked
+                        // (dated at the moment it reached zero) and the countdown is idle
+                        // again, showing the new count.
+                        state != null && state.isRunning && state.endsAt <= now ->
+                            HabitWidgetQueue.finishCountdown(context, habitId, now)
                         // Running: pause, keeping what is left.
                         state != null && state.isRunning ->
                             HabitWidgetQueue.pauseCountdown(
@@ -108,7 +103,7 @@ class HabitWidgetActionReceiver : BroadcastReceiver() {
                             )
                         // Running inside the app: ask the app to pause it.
                         display.isRunning -> addEvent(context, habitId, HabitEventKind.STOP_APP, now)
-                        // Idle: start a full countdown. When it runs out it is booked as one count.
+                        // Idle: start a full countdown. It keeps running below zero until a tap books one count.
                         display.habit.countdownMs > 0L ->
                             HabitWidgetQueue.startCountdown(
                                 context, habitId, now + display.habit.countdownMs

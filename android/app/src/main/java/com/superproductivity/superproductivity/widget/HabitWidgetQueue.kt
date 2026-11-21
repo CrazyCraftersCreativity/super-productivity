@@ -15,8 +15,8 @@ import java.util.UUID
  *  - running stopwatches: habit id -> start instant, for stopwatches started from the
  *    widget while the app is not running. Stopping one turns it into a TIME event.
  *  - countdowns started from the widget: habit id -> running (end instant) or paused
- *    (time left). When one runs out it is turned into a COUNT event at the moment it
- *    ran out, so Angular books it on the right day — see [settleExpiredCountdowns].
+ *    (time left). At zero it waits; the next tap turns it into a COUNT event dated at
+ *    the moment it ran out, so Angular books it on the right day — see [finishCountdown].
  *
  * Writes use commit() (not apply()): they run in short-lived broadcasts, and the
  * process may be killed right afterwards.
@@ -91,9 +91,6 @@ object HabitWidgetQueue {
     /** Same as [peekEvents], as the JSON array string handed to Angular. */
     @Synchronized
     fun eventsJson(context: Context): String {
-        // A countdown that ran out while nobody was looking becomes an event first, so
-        // the app applies it together with the taps.
-        settleExpiredCountdowns(context, System.currentTimeMillis())
         val array = JSONArray()
         for (event in peekEvents(context)) {
             array.put(toJson(event))
@@ -211,55 +208,33 @@ object HabitWidgetQueue {
         prefs.edit().putString(KEY_COUNTDOWNS, states.toString()).commit()
     }
 
-    /** The end instant of the soonest running countdown, or null if none is running. */
-    @Synchronized
-    fun nextCountdownEnd(context: Context): Long? {
-        var next: Long? = null
-        for (state in countdowns(context).values) {
-            if (state.isRunning && state.endsAt > 0L) {
-                next = if (next == null) state.endsAt else minOf(next, state.endsAt)
-            }
-        }
-        return next
-    }
-
     /**
-     * Turns every running countdown whose end has passed into a COUNT event dated at
-     * its end, and forgets it. Event and state change are written in ONE commit, so a
-     * crash can neither lose the count nor book it twice. Returns true if anything
-     * was settled.
+     * Finishes a countdown that has reached zero: books one count for the moment it ran
+     * out (so it lands on the right day, even if the tap comes later) and resets the
+     * countdown to idle. Does nothing unless the countdown is running and over.
+     * Returns true when a count was booked.
      */
     @Synchronized
-    fun settleExpiredCountdowns(context: Context, nowMs: Long): Boolean {
+    fun finishCountdown(context: Context, habitId: String, nowMs: Long): Boolean {
         val prefs = prefs(context)
         val states = readCountdowns(prefs)
-        val expired = mutableListOf<Pair<String, Long>>()
-        val keys = states.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            val entry = states.optJSONObject(key) ?: continue
-            val endsAt = entry.optLong("endsAt", 0L)
-            if (entry.optBoolean("running", false) && endsAt in 1..nowMs) {
-                expired.add(Pair(key, endsAt))
-            }
-        }
-        if (expired.isEmpty()) {
+        val entry = states.optJSONObject(habitId) ?: return false
+        val endsAt = entry.optLong("endsAt", 0L)
+        if (!entry.optBoolean("running", false) || endsAt <= 0L || endsAt > nowMs) {
             return false
         }
         val events = readArray(prefs)
-        for ((habitId, endsAt) in expired) {
-            events.put(
-                toJson(
-                    HabitEvent(
-                        id = UUID.randomUUID().toString(),
-                        habitId = habitId,
-                        kind = HabitEventKind.COUNT,
-                        at = endsAt
-                    )
+        events.put(
+            toJson(
+                HabitEvent(
+                    id = UUID.randomUUID().toString(),
+                    habitId = habitId,
+                    kind = HabitEventKind.COUNT,
+                    at = endsAt
                 )
             )
-            states.remove(habitId)
-        }
+        )
+        states.remove(habitId)
         while (events.length() > MAX_EVENTS) {
             events.remove(0)
         }

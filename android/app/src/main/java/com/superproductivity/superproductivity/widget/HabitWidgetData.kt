@@ -5,7 +5,7 @@ import java.util.Locale
 
 /**
  * How a habit is operated: a yes/no check, a numeric counter, a stopwatch, or a
- * repeated countdown (each time it runs out, the count goes up by one).
+ * repeated countdown (it keeps running below zero until a tap adds one to the count).
  */
 enum class HabitKind {
     BOOL, COUNT, TIME, COUNTDOWN;
@@ -86,7 +86,8 @@ data class HabitEvent(
 
 /**
  * A countdown started from the widget, remembered natively (the app may be closed).
- * Running: it runs out at [endsAt] (epoch ms). Paused: [remainingMs] is what is left.
+ * Running: it reaches zero at [endsAt] (epoch ms) and keeps running into negative
+ * time until a tap books it. Paused: [remainingMs] is what is left.
  */
 data class CountdownState(
     val isRunning: Boolean,
@@ -98,7 +99,8 @@ data class CountdownState(
  * What one habit looks like right now: snapshot plus pending taps, as of "now".
  *
  * [timeMs] depends on the kind: a running stopwatch = everything tracked today
- * including the current run; a running or paused countdown = time left; otherwise 0.
+ * including the current run; a running or paused countdown = time left (negative once
+ * it has passed zero); otherwise 0.
  */
 data class HabitDisplay(
     val habit: WidgetHabit,
@@ -191,7 +193,8 @@ object HabitWidgetData {
      * are not today's — and only taps made since the day ended count. Taps from before
      * midnight stay in the queue untouched; Angular books them on their own day.
      *
-     * A countdown that has already run out but is not booked yet counts as one more.
+     * A countdown that has passed zero keeps running (negative time left) and is not
+     * counted until the user taps it.
      */
     fun display(
         snapshot: HabitSnapshot,
@@ -248,13 +251,11 @@ object HabitWidgetData {
                     val state = countdowns[habit.id]
                     if (state != null) {
                         if (state.isRunning) {
-                            if (state.endsAt <= nowMs) {
-                                // Ran out, not booked yet: one more for the day it ran out on.
-                                if (isInWindow(state.endsAt, boundary, stale)) count += 1L
-                            } else {
-                                isRunning = true
-                                timeMs = state.endsAt - nowMs
-                            }
+                            isRunning = true
+                            // Below zero it keeps counting; never exactly 0, so a state
+                            // with a live clock is recognisable (see usesChronometer).
+                            val left = state.endsAt - nowMs
+                            timeMs = if (left == 0L) -1L else left
                         } else if (state.remainingMs > 0L) {
                             isPaused = true
                             timeMs = state.remainingMs
@@ -274,7 +275,8 @@ object HabitWidgetData {
     /** True when a live on-screen clock (Chronometer) shows this habit's time. */
     fun usesChronometer(display: HabitDisplay): Boolean = when (display.habit.kind) {
         HabitKind.TIME -> display.isRunning
-        HabitKind.COUNTDOWN -> display.isRunning && display.timeMs > 0L
+        // timeMs is 0 only for a countdown running inside the app (time left unknown)
+        HabitKind.COUNTDOWN -> display.isRunning && display.timeMs != 0L
         else -> false
     }
 

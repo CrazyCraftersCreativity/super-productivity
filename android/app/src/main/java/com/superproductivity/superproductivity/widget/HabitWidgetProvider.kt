@@ -11,7 +11,6 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Base64
@@ -75,9 +74,6 @@ class HabitWidgetProvider : AppWidgetProvider() {
         /** Redraw this long after midnight, so the new day has certainly begun. */
         private const val STALE_ALARM_SLACK_MS = 1_000L
 
-        /** Redraw this long after a countdown ends, so it has certainly run out. */
-        private const val COUNTDOWN_ALARM_SLACK_MS = 300L
-
         // Android's documented widget sizing: a widget n cells wide is about 70n - 30 dp.
         private const val CELL_DP = 70f
         private const val CELL_MARGIN_DP = 30f
@@ -130,9 +126,6 @@ class HabitWidgetProvider : AppWidgetProvider() {
             appWidgetIds: IntArray
         ) {
             val now = System.currentTimeMillis()
-            // Countdowns that ran out become counts first, so every widget agrees.
-            HabitWidgetQueue.settleExpiredCountdowns(context, now)
-
             val snapshot = loadSnapshot(context)
             val isStale = HabitWidgetData.isStale(snapshot.validUntil, now)
             val displays = HabitWidgetData.display(
@@ -154,11 +147,7 @@ class HabitWidgetProvider : AppWidgetProvider() {
                     Log.e(TAG, "Failed to update habits widget", e)
                 }
             }
-            scheduleWakeAlarm(
-                context,
-                snapshot.validUntil,
-                HabitWidgetQueue.nextCountdownEnd(context)
-            )
+            scheduleStaleAlarm(context, snapshot.validUntil)
         }
 
         /** Columns, rows and the size (dp) of one cell of a widget, from its reported size. */
@@ -388,50 +377,24 @@ class HabitWidgetProvider : AppWidgetProvider() {
         }
 
         /**
-         * One alarm wakes the widget at the next moment its picture changes without any
-         * tap: just after midnight ("outdated") or just after a running countdown ends
-         * (the count goes up). The widget's live clock counts below zero if the redraw is
-         * late, so a countdown end must be exact:
-         *  - exact alarm, when the app may set one ("Alarms & reminders" permission);
-         *  - otherwise an alarm-clock alarm, which needs no permission and is exact, but
-         *    shows the usual alarm icon in the status bar while the countdown runs.
-         * Midnight is not time-critical and uses an inexact alarm.
+         * One inexact alarm redraws the widget just after midnight, so it says
+         * "outdated" even if nobody touches it. Needs no permission; being a little late
+         * does not matter. (Anything missed is caught by the next tap, resize or hourly
+         * system update.)
          */
-        private fun scheduleWakeAlarm(context: Context, validUntil: Long?, countdownEnd: Long?) {
+        private fun scheduleStaleAlarm(context: Context, validUntil: Long?) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
                 ?: return
             val pendingIntent = wakeAlarmPendingIntent(context)
-            val now = System.currentTimeMillis()
-            val staleAt = validUntil?.takeIf { it > now }?.plus(STALE_ALARM_SLACK_MS)
-            val endAt = countdownEnd?.takeIf { it > now }?.plus(COUNTDOWN_ALARM_SLACK_MS)
-            val target = listOfNotNull(staleAt, endAt).minOrNull()
+            val target = validUntil
+                ?.takeIf { it > System.currentTimeMillis() }
+                ?.plus(STALE_ALARM_SLACK_MS)
             if (target == null) {
                 alarmManager.cancel(pendingIntent)
                 return
             }
-            val wantsExact = endAt != null && target == endAt
             try {
-                val canExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    alarmManager.canScheduleExactAlarms()
-                } else {
-                    true
-                }
-                if (wantsExact && canExact) {
-                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
-                } else if (wantsExact) {
-                    val showIntent = PendingIntent.getActivity(
-                        context, REQ_OPEN_APP,
-                        Intent(context, CapacitorMainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        },
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    alarmManager.setAlarmClock(
-                        AlarmManager.AlarmClockInfo(target, showIntent), pendingIntent
-                    )
-                } else {
-                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
-                }
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC, target, pendingIntent)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to schedule habit widget wake-up", e)
             }
