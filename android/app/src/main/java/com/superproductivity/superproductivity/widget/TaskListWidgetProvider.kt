@@ -42,12 +42,9 @@ class TaskListWidgetProvider : AppWidgetProvider() {
         val taskId = intent.getStringExtra(EXTRA_TASK_ID)
         when {
             taskId != null -> {
-                // Target state computed at render time from the DISPLAYED state
-                // (incl. pending overlay), so repeated taps toggle back and forth.
-                val setDone = intent.getBooleanExtra(EXTRA_SET_DONE, true)
-                Log.d(TAG, "Toggle done from widget: taskId=$taskId setDone=$setDone")
-                WidgetDoneQueue.setTarget(context, taskId, setDone)
-                // Re-render so the pending-done overlay shows the checked box. Full
+                Log.d(TAG, "Mark done from widget: taskId=$taskId")
+                WidgetDoneQueue.setTarget(context, taskId, true)
+                // Re-render so the pending-done overlay hides the row. Full
                 // refresh, not rows-only: the tap cannot change the blob, but the
                 // verdict is a function of *now*, and this is the one interaction that
                 // reaches our code while the app process is dead — so a tap on a new
@@ -83,7 +80,6 @@ class TaskListWidgetProvider : AppWidgetProvider() {
         const val ACTION_WIDGET_DONE_DRAIN =
             "com.superproductivity.superproductivity.WIDGET_DONE_DRAIN"
         const val EXTRA_TASK_ID = "WIDGET_TASK_ID"
-        const val EXTRA_SET_DONE = "WIDGET_SET_DONE"
         const val EXTRA_OPEN_APP = "WIDGET_OPEN_APP"
 
         private fun widgetIds(context: Context, appWidgetManager: AppWidgetManager): IntArray =

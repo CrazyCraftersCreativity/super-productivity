@@ -27,7 +27,9 @@ private class TaskListRemoteViewsFactory(
         val snapshot = try {
             val json = (context.applicationContext as App).keyValStore
                 .get(WidgetData.KEYVAL_KEY, "{}")
-            WidgetData.parse(json, WidgetDoneQueue.peek(context))
+            // The pending done taps are overlaid, then dropped: a task the user just
+            // ticked disappears at once, and done tasks are never listed.
+            WidgetData.parse(json, WidgetDoneQueue.peek(context)).filter { !it.isDone }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse widget data", e)
             emptyList()
@@ -56,14 +58,6 @@ private class TaskListRemoteViewsFactory(
 
         val task = tasks[position]
         rv.setTextViewText(R.id.widget_task_title, task.title)
-        rv.setTextColor(
-            R.id.widget_task_title,
-            context.getColor(if (task.isDone) R.color.widget_ink_muted else R.color.widget_ink)
-        )
-        rv.setImageViewResource(
-            R.id.widget_done_checkbox,
-            if (task.isDone) R.drawable.ic_widget_check_done else R.drawable.ic_widget_check_outline
-        )
 
         // Project dot: tint with the project color, hide entirely for
         // project-less tasks instead of showing a meaningless default color
@@ -81,17 +75,15 @@ private class TaskListRemoteViewsFactory(
             rv.setViewVisibility(R.id.widget_project_dot, android.view.View.GONE)
         }
 
-        // Checkbox toggles to the opposite of the DISPLAYED state; anywhere else
-        // on the row opens the app. A pending quick add has no task to toggle
-        // yet, so its checkbox opens the app too, which imports it.
+        // The checkbox marks the task done; anywhere else on the row opens the app.
+        // A pending quick add has no task to mark yet, so its checkbox opens the app
+        // too, which imports it.
         rv.setOnClickFillInIntent(
             R.id.widget_done_checkbox,
             if (task.isPending) {
                 Intent().putExtra(TaskListWidgetProvider.EXTRA_OPEN_APP, true)
             } else {
-                Intent()
-                    .putExtra(TaskListWidgetProvider.EXTRA_TASK_ID, task.id)
-                    .putExtra(TaskListWidgetProvider.EXTRA_SET_DONE, !task.isDone)
+                Intent().putExtra(TaskListWidgetProvider.EXTRA_TASK_ID, task.id)
             }
         )
         rv.setOnClickFillInIntent(
