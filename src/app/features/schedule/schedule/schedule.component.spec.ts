@@ -26,6 +26,7 @@ import { selectUndoneDeadlineTasksByDay } from '../../planner/store/planner.sele
 import { DEFAULT_TASK } from '../../tasks/task.model';
 import { DateService } from '../../../core/date/date.service';
 import { LS } from '../../../core/persistence/storage-keys.const';
+import { getDbDateStr } from '../../../util/get-db-date-str';
 
 describe('ScheduleComponent', () => {
   const mockLocalization = signal({ firstDayOfWeek: 1, dateTimeLocale: 'en-US' });
@@ -65,7 +66,9 @@ describe('ScheduleComponent', () => {
         'buildScheduleDays',
         'scheduleRefreshTick',
         'getTodayStr',
+        'getWeekStartDate',
         'createScheduleDaysWithContext',
+        'createScheduleDaysWithPastDays',
         'getDayClass',
         'hasEventsForDay',
         'getEventsForDay',
@@ -91,6 +94,7 @@ describe('ScheduleComponent', () => {
       return date.toISOString().split('T')[0];
     });
     mockScheduleService.createScheduleDaysWithContext.and.returnValue([]);
+    mockScheduleService.createScheduleDaysWithPastDays.and.returnValue([]);
     mockScheduleService.getDayClass.and.returnValue('');
     mockScheduleService.hasEventsForDay.and.returnValue(false);
     mockScheduleService.getEventsForDay.and.returnValue([]);
@@ -336,6 +340,150 @@ describe('ScheduleComponent', () => {
       expect(newDate).not.toBeNull();
       // Should be first of previous month
       expect(newDate?.getDate()).toBe(1);
+    });
+  });
+
+  describe('calendar week view', () => {
+    // the mocked today is Tue 2026-01-20
+    const dayStrs = (start: Date, count = 7): string[] =>
+      Array.from({ length: count }, (_, i) =>
+        getDbDateStr(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)),
+      );
+
+    beforeEach(() => {
+      mockLayoutService.selectedTimeView.set('calendar-week');
+      mockScheduleService.getWeekStartDate.and.callFake(
+        (referenceDate: Date | null, firstDayOfWeek: number) => {
+          const date = referenceDate ? new Date(referenceDate) : new Date(2026, 0, 20);
+          date.setHours(12, 0, 0, 0);
+          date.setDate(date.getDate() - ((date.getDay() - firstDayOfWeek + 7) % 7));
+          return date;
+        },
+      );
+      mockScheduleService.getDaysToShow.and.callFake(
+        (count: number, referenceDate: Date | null) =>
+          dayStrs(referenceDate ?? new Date(2026, 0, 20), count),
+      );
+      fixture.detectChanges();
+    });
+
+    afterEach(() => localStorage.removeItem('SELECTED_TIME_VIEW'));
+
+    it('starts on the first day of the week', () => {
+      expect(component.daysToShow()[0]).toBe('2026-01-19');
+      expect(component.daysToShow()[6]).toBe('2026-01-25');
+    });
+
+    it('starts on Sunday when the first day of the week is Sunday', () => {
+      mockLocalization.set({ firstDayOfWeek: 0, dateTimeLocale: 'en-US' });
+      fixture.detectChanges();
+
+      expect(component.daysToShow()[0]).toBe('2026-01-18');
+      expect(component.daysToShow()[6]).toBe('2026-01-24');
+    });
+
+    it('counts the week by the first day of the week', () => {
+      const translate = TestBed.inject(TranslateService);
+      translate.setTranslation('en', {
+        F: { WORKLOG: { CMP: { WEEK_NR: 'Week {{nr}}' } } },
+      });
+      translate.use('en');
+      fixture.detectChanges();
+
+      // Mon Jan 19 2026 is in ISO week 4
+      expect(component.headerTitle()).toMatch(/^Week 4 · /);
+    });
+
+    it('is viewing today and can go back one week', () => {
+      expect(component.isViewingToday()).toBe(true);
+      expect(component.isPreviousDisabled()).toBe(false);
+    });
+
+    it('goes back one week and stops there', () => {
+      component.goToPreviousPeriod();
+      fixture.detectChanges();
+
+      expect(component.daysToShow()[0]).toBe('2026-01-12');
+      expect(component.isViewingToday()).toBe(false);
+      expect(component.isPreviousDisabled()).toBe(true);
+
+      component.goToPreviousPeriod();
+      fixture.detectChanges();
+
+      expect(component.daysToShow()[0]).toBe('2026-01-12');
+    });
+
+    it('goes forward from a past week back to the current one', () => {
+      component.goToPreviousPeriod();
+      fixture.detectChanges();
+
+      component.goToNextPeriod();
+
+      expect(component['_selectedDate']()).toBeNull();
+      expect(component.isViewingToday()).toBe(true);
+    });
+
+    it('goes forward by whole weeks', () => {
+      component.goToNextPeriod();
+      fixture.detectChanges();
+
+      expect(component.daysToShow()[0]).toBe('2026-01-26');
+    });
+
+    it('returns to the current week with goToToday', () => {
+      component.goToPreviousPeriod();
+      fixture.detectChanges();
+
+      component.goToToday();
+      fixture.detectChanges();
+
+      expect(component.daysToShow()[0]).toBe('2026-01-19');
+    });
+
+    it('leaves the past behind when switching to another view', () => {
+      component.goToPreviousPeriod();
+
+      component.selectTimeView('week');
+
+      expect(component['_selectedDate']()).toBeNull();
+    });
+
+    it('keeps a future week when switching to another view', () => {
+      component.goToNextPeriod();
+
+      component.selectTimeView('week');
+
+      expect(component['_selectedDate']()).not.toBeNull();
+    });
+
+    it('does not open the day view on a past day', () => {
+      component.openDayView('2026-01-19');
+
+      expect(mockLayoutService.selectedTimeView()).toBe('calendar-week');
+    });
+
+    it('builds its days with the days before today set apart', () => {
+      mockScheduleService.createScheduleDaysWithPastDays.calls.reset();
+
+      component.scheduleDays();
+
+      const params = mockScheduleService.createScheduleDaysWithPastDays.calls.mostRecent()
+        .args[0];
+      expect(params.pastDayCount).toBe(1);
+      expect(params.daysToShow[0]).toBe('2026-01-19');
+    });
+
+    it('builds a week that starts today like the next 7 days', () => {
+      mockScheduleService.createScheduleDaysWithPastDays.calls.reset();
+      // Tue is the first day of the week
+      mockLocalization.set({ firstDayOfWeek: 2, dateTimeLocale: 'en-US' });
+      fixture.detectChanges();
+
+      component.scheduleDays();
+
+      expect(
+        mockScheduleService.createScheduleDaysWithPastDays,
+      ).not.toHaveBeenCalled();
     });
   });
 

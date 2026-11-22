@@ -13,12 +13,23 @@
     </button>
     <button
       mat-icon-button
+      class="time-view-btn e2e-calendar-week-view-btn"
+      [class.active]="isCalendarWeekView()"
+      [attr.aria-pressed]="isCalendarWeekView()"
+      (click)="selectTimeView('calendar-week')"
+      [matTooltip]="T.F.SCHEDULE.VIEW_THIS_WEEK | translate"
+      [attr.aria-label]="T.F.SCHEDULE.VIEW_THIS_WEEK | translate"
+    >
+      <mat-icon>date_range</mat-icon>
+    </button>
+    <button
+      mat-icon-button
       class="time-view-btn"
       [class.active]="isWeekView()"
       [attr.aria-pressed]="isWeekView()"
       (click)="selectTimeView('week')"
-      [matTooltip]="T.F.SCHEDULE.VIEW_WEEK | translate"
-      [attr.aria-label]="T.F.SCHEDULE.VIEW_WEEK | translate"
+      [matTooltip]="T.F.SCHEDULE.VIEW_NEXT_7_DAYS | translate"
+      [attr.aria-label]="T.F.SCHEDULE.VIEW_NEXT_7_DAYS | translate"
     >
       <mat-icon>view_week</mat-icon>
     </button>
@@ -77,7 +88,7 @@
     <button
       mat-icon-button
       (click)="navigatePrevious()"
-      [disabled]="isViewingToday()"
+      [disabled]="isPreviousDisabled()"
       [attr.aria-label]="
         (isMonthView()
           ? T.F.SCHEDULE.PREVIOUS_MONTH
@@ -188,6 +199,7 @@
       [currentTimeRow]="currentTimeRow()"
       [todayDateStr]="_todayDateStr()"
       [isHorizontalScrollMode]="shouldEnableHorizontalScroll()"
+      [fitRowHeightPx]="visibleHoursRowHeightPx()"
       [isHScrolled]="isHScrolled()"
       [deadlineTasksByDay]="deadlineTasksByDay()"
     ></schedule-week>

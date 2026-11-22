@@ -120,19 +120,23 @@ export class ScheduleService {
       timelineCfg,
       currentTaskId = null,
       isAutoPlacementOnly = false,
+      isPastDays = false,
     } = params;
 
     if (!timelineTasks || !taskRepeatCfgs || !plannerDayMap) {
       return [];
     }
 
+    // Past days only show what is actually stored for them: timed tasks,
+    // calendar events and planner entries. Today's list flowing onto them and
+    // repeat projections would invent entries for days that are over.
     return mapToScheduleDays(
       now,
       daysToShow,
-      timelineTasks.unPlanned,
+      isPastDays ? [] : timelineTasks.unPlanned,
       timelineTasks.planned,
-      taskRepeatCfgs.withStartTime,
-      taskRepeatCfgs.withoutStartTime,
+      isPastDays ? [] : taskRepeatCfgs.withStartTime,
+      isPastDays ? [] : taskRepeatCfgs.withoutStartTime,
       calendarEvents ?? [],
       currentTaskId,
       plannerDayMap,
@@ -166,6 +170,8 @@ export class ScheduleService {
     realNow: number;
     currentTaskId: string | null;
     isAutoPlacementOnly?: boolean;
+    // the days are all before today, see buildScheduleDays
+    isPastDays?: boolean;
   }): ScheduleDay[] {
     this.scheduleRefreshTick();
     const timelineTasks = this._timelineTasks();
@@ -195,7 +201,58 @@ export class ScheduleService {
       timelineCfg,
       currentTaskId: params.currentTaskId,
       isAutoPlacementOnly: params.isAutoPlacementOnly,
+      isPastDays: params.isPastDays,
     });
+  }
+
+  /**
+   * Schedule days for a range that starts before today: the first
+   * `pastDayCount` days are built as past days, the rest from today on as
+   * usual. Both parts are anchored to their own first day, so the day-0-is-today
+   * assumptions of the mapper keep holding for each of them.
+   */
+  createScheduleDaysWithPastDays(params: {
+    daysToShow: string[];
+    pastDayCount: number;
+    realNow: number;
+    currentTaskId: string | null;
+  }): ScheduleDay[] {
+    const { daysToShow, pastDayCount, realNow, currentTaskId } = params;
+    const pastDays = daysToShow.slice(0, pastDayCount);
+    const currentDays = daysToShow.slice(pastDayCount);
+
+    const pastScheduleDays = pastDays.length
+      ? this.createScheduleDaysWithContext({
+          daysToShow: pastDays,
+          contextNow: anchorContextNow(pastDays[0], realNow),
+          realNow,
+          currentTaskId,
+          isPastDays: true,
+        })
+      : [];
+    // The mapper returns no days at all while nothing exists for the range, but
+    // the grid addresses its columns by index.
+    const paddedPastDays = pastDays.map(
+      (dayDate): ScheduleDay => ({
+        ...(pastScheduleDays.find((day) => day.dayDate === dayDate) ?? {
+          dayDate,
+          entries: [],
+          beyondBudgetTasks: [],
+        }),
+        isToday: false,
+      }),
+    );
+
+    const currentScheduleDays = currentDays.length
+      ? this.createScheduleDaysWithContext({
+          daysToShow: currentDays,
+          contextNow: anchorContextNow(currentDays[0], realNow),
+          realNow,
+          currentTaskId,
+        })
+      : [];
+
+    return [...paddedPastDays, ...currentScheduleDays];
   }
 
   getDaysToShow(nrOfDaysToShow: number, referenceDate: Date | null = null): string[] {
@@ -221,6 +278,22 @@ export class ScheduleService {
       cursor.setDate(cursor.getDate() + 1);
     }
     return daysToShow;
+  }
+
+  /**
+   * Midday of the first day of the week that contains `referenceDate` (the
+   * logical today when null), for `firstDayOfWeek` 0 = Sunday, 1 = Monday, ...
+   */
+  getWeekStartDate(referenceDate: Date | null, firstDayOfWeek: number): Date {
+    const weekStart = referenceDate
+      ? new Date(referenceDate)
+      : this._dateService.getLogicalTodayDate();
+    // midday, as in getDaysToShow: calendar-day stepping must not hit a DST gap
+    weekStart.setHours(12, 0, 0, 0);
+    weekStart.setDate(
+      weekStart.getDate() - ((weekStart.getDay() - firstDayOfWeek + 7) % 7),
+    );
+    return weekStart;
   }
 
   /**
@@ -471,4 +544,6 @@ export interface BuildScheduleDaysParams {
   currentTaskId?: string | null;
   // month view has no tray: it keeps auto-placement whatever the setting says
   isAutoPlacementOnly?: boolean;
+  // every day is before today: only stored entries are shown, nothing is projected
+  isPastDays?: boolean;
 }

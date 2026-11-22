@@ -14,12 +14,31 @@
   }
 
   @include mq(xs, max) {
-    // Mobile
-    --schedule-day-width: #{$schedule-day-column-width-mobile};
+    // Mobile: a fixed number of day columns fill the width next to the time column
+    --schedule-day-width: calc(
+      (100vw - var(--schedule-time-width)) / #{$schedule-phone-visible-day-columns}
+    );
   }
 
   // Enable horizontal scroll when viewport is too small for 7 days
   &[data-horizontal-scroll] {
+    // Phone day columns are about 60px wide: a smaller header label fits them
+    @include mq(xs, max) {
+      .day {
+        gap: 2px;
+        padding: 0 2px;
+        font-size: 12px;
+
+        mat-icon {
+          flex-basis: 12px;
+          width: 12px;
+          height: 12px;
+          font-size: 12px;
+          line-height: 12px;
+        }
+      }
+    }
+
     .week-header {
       // Force width to match grid width for horizontal scrolling
       width: fit-content;

@@ -62,6 +62,7 @@ import { DEFAULT_FIRST_DAY_OF_WEEK } from '../../../core/locale.constants';
 import { DateTimeFormatService } from '../../../core/date-time-format/date-time-format.service';
 import { getWeekNumber } from '../../../util/get-week-number';
 import { parseDbDateStr } from '../../../util/parse-db-date-str';
+import { getDbDateStr } from '../../../util/get-db-date-str';
 import { anchorContextNow } from '../anchor-context-now';
 import {
   SwipePagerComponent,
@@ -177,7 +178,10 @@ export class ScheduleComponent {
   private _currentTimeViewMode = computed(() => this.layoutService.selectedTimeView());
   isMonthView = computed(() => this._currentTimeViewMode() === 'month');
   isDayView = computed(() => this._currentTimeViewMode() === 'day');
+  // next 7 days, starting today
   isWeekView = computed(() => this._currentTimeViewMode() === 'week');
+  // the week containing today, starting on the first day of the week
+  isCalendarWeekView = computed(() => this._currentTimeViewMode() === 'calendar-week');
 
   // Navigation state - null = viewing today, Date = viewing selected date
   private _selectedDate = signal<Date | null>(null);
@@ -213,8 +217,8 @@ export class ScheduleComponent {
 
   shouldEnableHorizontalScroll = computed(() => {
     const selectedView = this._currentTimeViewMode();
-    // Only enable horizontal scroll for week view when viewport is narrow
-    if (selectedView !== 'week') {
+    // Only enable horizontal scroll for the week views when viewport is narrow
+    if (selectedView !== 'week' && selectedView !== 'calendar-week') {
       return false;
     }
     // Enable scroll when viewport is smaller than what's needed for 7 days
@@ -230,7 +234,7 @@ export class ScheduleComponent {
     // below: it needs `selectedDate` and `firstDayOfWeek`, neither of which is
     // read here.
 
-    // Week view: always 7 days
+    // Week views: always 7 days
     return 7;
   });
 
@@ -253,6 +257,12 @@ export class ScheduleComponent {
         this.scheduleService.getMonthWeeksToShow(firstDayOfWeek, selectedDate),
         firstDayOfWeek,
         selectedDate,
+      );
+    }
+    if (selectedView === 'calendar-week') {
+      return this.scheduleService.getDaysToShow(
+        count,
+        this.scheduleService.getWeekStartDate(selectedDate, this.firstDayOfWeek()),
       );
     }
     return this.scheduleService.getDaysToShow(count, selectedDate);
@@ -298,7 +308,10 @@ export class ScheduleComponent {
 
     const start = parseDbDateStr(days[0]);
     const end = parseDbDateStr(days[days.length - 1]);
-    const weekNr = getWeekNumber(start); // ISO — default firstDayOfWeek=1
+    // The next-7-days range starts on any weekday, so it keeps the ISO number
+    const weekNr = this.isCalendarWeekView()
+      ? getWeekNumber(start, this.firstDayOfWeek())
+      : getWeekNumber(start);
     const sameMonth =
       start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
     const startStr = safeFormatDate(start, 'MMM d', locale);
@@ -347,6 +360,20 @@ export class ScheduleComponent {
   });
 
   scheduleDays = computed(() => {
+    const todayStr = this._todayDateStr();
+    const pastDayCount =
+      this.isCalendarWeekView() && todayStr
+        ? this.daysToShow().filter((day) => day < todayStr).length
+        : 0;
+    if (pastDayCount > 0) {
+      // this week's days before today: the mapper assumes day 0 is today
+      return this.scheduleService.createScheduleDaysWithPastDays({
+        daysToShow: this.daysToShow(),
+        pastDayCount,
+        realNow: Date.now(),
+        currentTaskId: this.taskService.currentTaskId() ?? null,
+      });
+    }
     return this.scheduleService.createScheduleDaysWithContext({
       daysToShow: this.daysToShow(),
       contextNow: this._contextNow(),
@@ -385,6 +412,19 @@ export class ScheduleComponent {
   events = computed(() => this._eventsAndBeyondBudget().eventsFlat);
   beyondBudget = computed(() => this._eventsAndBeyondBudget().beyondBudgetDays);
   monthEvents = computed(() => this.events().concat(...this.beyondBudget()));
+
+  // Phones fit PHONE_VISIBLE_HOURS of a day into the scroll area; the rest scrolls.
+  private _viewportHeightPx = signal(0);
+  private _weekHeaderHeightPx = signal(0);
+  visibleHoursRowHeightPx = computed((): number | null => {
+    if (!this._isCompact() || !(this.isWeekView() || this.isCalendarWeekView())) {
+      return null;
+    }
+    const gridHeight = this._viewportHeightPx() - this._weekHeaderHeightPx();
+    return gridHeight > 0
+      ? Math.max(1.5, gridHeight / (SCHEDULE_CONSTANTS.PHONE_VISIBLE_HOURS * FH))
+      : null;
+  });
 
   nowRow = computed(() => {
     // Trigger re-computation every 2 minutes
@@ -480,7 +520,38 @@ export class ScheduleComponent {
     });
   }
 
+  // First day of the week containing today
+  private _currentWeekStartStr = computed(() => {
+    this._todayDateStr();
+    return getDbDateStr(
+      this.scheduleService.getWeekStartDate(null, this.firstDayOfWeek()),
+    );
+  });
+
+  // The other views never show the past, "this week" shows MAX_WEEKS_BACK weeks of it
+  isPreviousDisabled = computed(() => {
+    if (!this.isCalendarWeekView()) return this.isViewingToday();
+    const earliestWeekStart = shiftDayStr(
+      this._currentWeekStartStr(),
+      -7 * SCHEDULE_CONSTANTS.MAX_WEEKS_BACK,
+    );
+    return !this.daysToShow().length || this.daysToShow()[0] <= earliestWeekStart;
+  });
+
+  private _goToCalendarWeek(offsetWeeks: -1 | 1): void {
+    const targetWeekStart = shiftDayStr(this.daysToShow()[0], offsetWeeks * 7);
+    this._selectedDate.set(
+      targetWeekStart === this._currentWeekStartStr()
+        ? null
+        : parseDbDateStr(targetWeekStart),
+    );
+  }
+
   goToPreviousPeriod(): void {
+    if (this.isCalendarWeekView()) {
+      if (!this.isPreviousDisabled()) this._goToCalendarWeek(-1);
+      return;
+    }
     // Never navigate into the past — the displayed range must include today or later
     if (this.isViewingToday()) return;
 
@@ -513,6 +584,10 @@ export class ScheduleComponent {
   }
 
   goToNextPeriod(): void {
+    if (this.isCalendarWeekView()) {
+      this._goToCalendarWeek(1);
+      return;
+    }
     const currentDate = this._selectedDate() || this._dateService.getLogicalTodayDate();
     const selectedView = this._currentTimeViewMode();
 
@@ -595,26 +670,46 @@ export class ScheduleComponent {
     const trayHeight =
       this._scheduleWeeks()[weekIndex]?.getVisibleTrayEl()?.offsetHeight ?? 0;
     element.style.scrollMarginTop = `${trayHeight}px`;
+    const wrapper = this._scrollWrapper()?.nativeElement;
+    const scrollLeft = wrapper?.scrollLeft ?? 0;
     element.scrollIntoView({ block: 'start', inline: 'start', behavior: 'instant' });
+    // "This week" opens on its first day, not scrolled sideways to today's column
+    if (wrapper && this.isCalendarWeekView()) {
+      wrapper.scrollLeft = scrollLeft;
+    }
   }
 
   openDayView(day: string): void {
-    // same rule as onDayPagerNavigate: (logical) today is the "today" mode
+    // the day view never shows the past
     const today = this._todayDateStr();
+    if (today && day < today) return;
+    // same rule as onDayPagerNavigate: (logical) today is the "today" mode
     this._selectedDate.set(today && day > today ? parseDbDateStr(day) : null);
     this.selectTimeView('day');
   }
 
-  selectTimeView(view: 'week' | 'month' | 'day'): void {
+  selectTimeView(view: 'week' | 'calendar-week' | 'month' | 'day'): void {
+    // only "this week" shows past days: leave them behind for the other views
+    const selectedDate = this._selectedDate();
+    const today = this._todayDateStr();
+    if (
+      view !== 'calendar-week' &&
+      selectedDate &&
+      today &&
+      getDbDateStr(selectedDate) < today
+    ) {
+      this._selectedDate.set(null);
+    }
     this.layoutService.selectedTimeView.set(view);
     localStorage.setItem(LS.SELECTED_TIME_VIEW, view);
   }
 
-  private getTimeView(): 'week' | 'month' | 'day' {
+  private getTimeView(): 'week' | 'calendar-week' | 'month' | 'day' {
     const preservedView = localStorage.getItem(LS.SELECTED_TIME_VIEW);
     if (preservedView === 'month') return 'month';
     if (preservedView === 'day') return 'day';
     if (preservedView === 'week') return 'week';
+    if (preservedView === 'calendar-week') return 'calendar-week';
     // No saved choice yet: a phone fits under three of the week's seven columns,
     // so it starts on one readable day instead.
     return this.layoutService.isXs() ? 'day' : 'week';
@@ -622,6 +717,23 @@ export class ScheduleComponent {
 
   constructor() {
     this.layoutService.selectedTimeView.set(this.getTimeView());
+
+    effect((onCleanup) => {
+      const wrapper = this._scrollWrapper()?.nativeElement;
+      if (!wrapper || typeof ResizeObserver === 'undefined') {
+        return;
+      }
+      const measure = (): void => {
+        this._viewportHeightPx.set(wrapper.clientHeight);
+        this._weekHeaderHeightPx.set(
+          wrapper.querySelector<HTMLElement>('.week-header')?.offsetHeight ?? 0,
+        );
+      };
+      const observer = new ResizeObserver(measure);
+      observer.observe(wrapper);
+      measure();
+      onCleanup(() => observer.disconnect());
+    });
 
     effect(() => {
       if (this.isMonthView() === false) {

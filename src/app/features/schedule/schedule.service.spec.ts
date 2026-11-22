@@ -22,7 +22,7 @@ import { DateTimeFormatService } from '../../core/date-time-format/date-time-for
 import { ScheduleCalendarMapEntry, ScheduleEvent } from './schedule.model';
 import { SVEType } from './schedule.const';
 import { ScheduleConfig } from '../config/global-config.model';
-import { TaskWithSubTasks } from '../tasks/task.model';
+import { DEFAULT_TASK, TaskWithSubTasks } from '../tasks/task.model';
 
 describe('ScheduleService', () => {
   let service: ScheduleService;
@@ -400,6 +400,133 @@ describe('ScheduleService', () => {
             expect(result).withContext(context).toContain(last);
           }
         }
+      });
+    });
+  });
+
+  describe('getWeekStartDate', () => {
+    // Tue Jan 20, 2026
+    const tuesday = new Date(2026, 0, 20);
+
+    it('starts a Monday-first week on the Monday on or before the date', () => {
+      expect(getDbDateStr(service.getWeekStartDate(tuesday, 1))).toBe('2026-01-19');
+    });
+
+    it('starts a Sunday-first week on the Sunday on or before the date', () => {
+      expect(getDbDateStr(service.getWeekStartDate(tuesday, 0))).toBe('2026-01-18');
+    });
+
+    it('keeps the date when it already is the first day of the week', () => {
+      expect(getDbDateStr(service.getWeekStartDate(new Date(2026, 0, 19), 1))).toBe(
+        '2026-01-19',
+      );
+    });
+
+    it('does not mix up a Saturday-first week', () => {
+      expect(getDbDateStr(service.getWeekStartDate(tuesday, 6))).toBe('2026-01-17');
+    });
+
+    it('uses the logical today without a reference date', () => {
+      const today = dateService.getLogicalTodayDate();
+      const weekStart = service.getWeekStartDate(null, today.getDay());
+      expect(getDbDateStr(weekStart)).toBe(getDbDateStr(today));
+    });
+
+    it('does not change the given date', () => {
+      const date = new Date(2026, 0, 20, 17, 30);
+      service.getWeekStartDate(date, 1);
+      expect(date.getTime()).toBe(new Date(2026, 0, 20, 17, 30).getTime());
+    });
+  });
+
+  describe('past days', () => {
+    const untimedTask = {
+      ...DEFAULT_TASK,
+      id: 'untimed',
+      title: 'untimed',
+      timeEstimate: 60 * 60 * 1000,
+      subTasks: [],
+    } as TaskWithSubTasks;
+    const clock = new Date(2026, 0, 20, 12, 0).getTime();
+
+    it('lists the untimed task of the list on a normal day', () => {
+      const result = service.buildScheduleDays({
+        now: new Date(2026, 0, 20, 0, 0).getTime(),
+        realNow: clock,
+        daysToShow: ['2026-01-20'],
+        timelineTasks: { unPlanned: [untimedTask], planned: [] },
+        taskRepeatCfgs: { withStartTime: [], withoutStartTime: [] },
+        calendarEvents: [],
+        plannerDayMap: {},
+      });
+
+      expect(result[0].entries.length).toBeGreaterThan(0);
+    });
+
+    it('does not put the list on days flagged as past', () => {
+      const result = service.buildScheduleDays({
+        now: new Date(2026, 0, 20, 0, 0).getTime(),
+        realNow: clock,
+        daysToShow: ['2026-01-20'],
+        timelineTasks: { unPlanned: [untimedTask], planned: [] },
+        taskRepeatCfgs: { withStartTime: [], withoutStartTime: [] },
+        calendarEvents: [],
+        plannerDayMap: {},
+        isPastDays: true,
+      });
+
+      expect(result.flatMap((day) => day.entries)).toEqual([]);
+    });
+
+    describe('createScheduleDaysWithPastDays', () => {
+      beforeEach(() => spyOn(Date, 'now').and.returnValue(clock));
+
+      it('returns one day per requested day, past ones never marked as today', () => {
+        const days = ['2026-01-18', '2026-01-19', '2026-01-20', '2026-01-21'];
+
+        const result = service.createScheduleDaysWithPastDays({
+          daysToShow: days,
+          pastDayCount: 2,
+          realNow: clock,
+          currentTaskId: null,
+        });
+
+        // nothing exists at all here, the mapper returns no days of its own
+        expect(result.map((day) => day.dayDate).slice(0, 2)).toEqual(days.slice(0, 2));
+        expect(result.slice(0, 2).every((day) => !day.isToday)).toBe(true);
+      });
+
+      it('builds the past and the current part separately', () => {
+        const buildSpy = spyOn(service, 'buildScheduleDays').and.returnValue([]);
+
+        service.createScheduleDaysWithPastDays({
+          daysToShow: ['2026-01-18', '2026-01-19', '2026-01-20', '2026-01-21'],
+          pastDayCount: 2,
+          realNow: clock,
+          currentTaskId: null,
+        });
+
+        const [pastParams, currentParams] = buildSpy.calls.allArgs().map((a) => a[0]);
+        expect(pastParams.daysToShow).toEqual(['2026-01-18', '2026-01-19']);
+        expect(pastParams.isPastDays).toBe(true);
+        expect(pastParams.now).toBe(new Date(2026, 0, 18, 0, 0).getTime());
+        expect(currentParams.daysToShow).toEqual(['2026-01-20', '2026-01-21']);
+        expect(currentParams.isPastDays).toBeFalsy();
+        expect(currentParams.now).toBe(clock);
+      });
+
+      it('skips the current part when every day is in the past', () => {
+        const buildSpy = spyOn(service, 'buildScheduleDays').and.returnValue([]);
+
+        const result = service.createScheduleDaysWithPastDays({
+          daysToShow: ['2026-01-12', '2026-01-13'],
+          pastDayCount: 2,
+          realNow: clock,
+          currentTaskId: null,
+        });
+
+        expect(buildSpy).toHaveBeenCalledTimes(1);
+        expect(result.length).toBe(2);
       });
     });
   });

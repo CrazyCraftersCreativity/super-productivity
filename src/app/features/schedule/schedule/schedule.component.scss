@@ -107,6 +107,31 @@
     background: var(--bg-lighter);
   }
 
+  // Four view buttons, the calendar filter and three navigation buttons do not
+  // fit a phone at 48px, so every button shrinks there and the title gets the rest.
+  @include mq(xs, max) {
+    gap: var(--s-half);
+
+    .time-view-selector {
+      margin-left: var(--s-half);
+    }
+
+    button[mat-icon-button] {
+      --mdc-icon-button-state-layer-size: 36px;
+      --mat-icon-button-state-layer-size: 36px;
+      --mat-icon-button-icon-size: 20px;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+    }
+
+    mat-icon {
+      width: 20px;
+      height: 20px;
+      font-size: 20px;
+    }
+  }
+
   .time-view-btn {
     border: none;
     border-radius: 0;

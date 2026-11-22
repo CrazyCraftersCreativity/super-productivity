@@ -67,7 +67,11 @@ export class LayoutService {
     select(selectIsShowIssuePanel),
   );
 
-  readonly selectedTimeView = signal<'week' | 'month' | 'day'>('week');
+  /**
+   * 'week' = next 7 days from today, 'calendar-week' = the week containing today
+   * from the configured first day of week.
+   */
+  readonly selectedTimeView = signal<'week' | 'calendar-week' | 'month' | 'day'>('week');
   readonly isWorkViewScrolled = signal<boolean>(false);
   /** The side nav is open as the phone layout's overlay menu. */
   readonly isMobileSideNavOpen = signal<boolean>(false);

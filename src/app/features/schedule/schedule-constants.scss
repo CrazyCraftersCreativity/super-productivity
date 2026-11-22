@@ -14,7 +14,9 @@ $schedule-mobile-breakpoint: 480px;
 $schedule-time-column-width: 3em;
 $schedule-day-column-width-desktop: 180px;
 $schedule-day-column-width-tablet: 150px;
-$schedule-day-column-width-mobile: 120px;
+
+// Day columns visible without horizontal scrolling on a phone (< $layout-xs)
+$schedule-phone-visible-day-columns: 5;
 
 // Sticky week header. Used both for the header itself and for the
 // scroll-padding that keeps the scroll target from landing under it.

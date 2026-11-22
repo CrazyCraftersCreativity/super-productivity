@@ -35,9 +35,17 @@ export const SCHEDULE_CONSTANTS = {
     DESKTOP: 180,
     /** Tablet day column width in pixels */
     TABLET: 150,
-    /** Mobile day column width in pixels */
-    MOBILE: 120,
   },
+
+  /**
+   * How many weeks before the current one "this week" can page back. Calendar
+   * events are only fetched for the last 7 days and the planner drops past
+   * days, so there is nothing older worth paging to.
+   */
+  MAX_WEEKS_BACK: 1,
+
+  /** Hours of a day visible without vertical scrolling on a phone (< XS). */
+  PHONE_VISIBLE_HOURS: 18,
 
   /**
    * Scrollbar dimensions for the horizontal scroll mode.

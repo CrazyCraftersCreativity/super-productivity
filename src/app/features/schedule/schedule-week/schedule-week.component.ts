@@ -106,10 +106,22 @@ export class ScheduleWeekComponent implements OnInit, AfterViewInit, OnDestroy {
   isTaskDragActive = input<boolean>(false);
   scheduleRowHeightPx = signal<number>(readStoredScheduleRowHeight());
   scheduleRowHeightCss = computed(() => `${this.scheduleRowHeightPx()}px`);
-  scheduleRowHeightMobileCss = computed(
-    () =>
-      `${Math.max(4, Math.round(this.scheduleRowHeightPx() * MOBILE_ROW_HEIGHT_FACTOR))}px`,
-  );
+  // set on a phone to fit a fixed number of hours into the view; wins over the stored height
+  fitRowHeightPx = input<number | null>(null);
+  scheduleRowHeightMobileCss = computed(() => {
+    const fitRowHeightPx = this.fitRowHeightPx();
+    if (fitRowHeightPx !== null) {
+      return `${fitRowHeightPx}px`;
+    }
+    return `${Math.max(4, Math.round(this.scheduleRowHeightPx() * MOBILE_ROW_HEIGHT_FACTOR))}px`;
+  });
+
+  // Column of the current-time marker: today's, which is not the first one when
+  // the range starts earlier in the week.
+  currentTimeDayIndex = computed(() => {
+    const todayIndex = this.daysToShow().indexOf(this.todayDateStr() ?? '');
+    return todayIndex === -1 ? 0 : todayIndex;
+  });
 
   // Shift mode changes drag behavior: instead of scheduling at a time,
   // tasks are planned for the day or reordered relative to other tasks.
